@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">J.A.R.V.I.S.</string>
+    <string name="accessibility_service_description">Enables J.A.R.V.I.S. Neural Logic to perform phone navigation, screen scrolling, and automated input gestures on your command, Boss.</string>
+</resources>
