@@ -43,4 +43,20 @@ interface JarvisDao {
 
     @Delete
     suspend fun deleteAlarm(alarm: JarvisAlarm)
+
+    // Macro Cache
+    @Query("SELECT * FROM macro_cache ORDER BY lastExecuted DESC")
+    fun getAllMacros(): Flow<List<MacroCache>>
+
+    @Query("SELECT * FROM macro_cache WHERE intentKey = :intentKey LIMIT 1")
+    suspend fun findMacroByIntent(intentKey: String): MacroCache?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMacro(macro: MacroCache): Long
+
+    @Delete
+    suspend fun deleteMacro(macro: MacroCache)
+
+    @Query("DELETE FROM macro_cache")
+    suspend fun clearMacros()
 }

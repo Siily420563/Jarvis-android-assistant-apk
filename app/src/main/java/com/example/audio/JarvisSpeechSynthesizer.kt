@@ -1,7 +1,10 @@
 package com.example.audio
 
 import android.content.Context
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
 import java.util.*
 
@@ -11,27 +14,74 @@ class JarvisSpeechSynthesizer(context: Context) : TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            val result = tts?.setLanguage(Locale.UK)
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts?.language = Locale.US
+            // Priority: Indian English / Hindi locale for authentic Hinglish pronunciation
+            val localesToTry = listOf(
+                Locale("en", "IN"),
+                Locale("hi", "IN"),
+                Locale.UK,
+                Locale.US
+            )
+
+            var langSet = false
+            for (loc in localesToTry) {
+                val res = tts?.setLanguage(loc)
+                if (res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED) {
+                    langSet = true
+                    break
+                }
             }
-            tts?.setPitch(0.95f)
-            tts?.setSpeechRate(1.0f)
+
+            if (!langSet) {
+                tts?.language = Locale.getDefault()
+            }
+
+            // Set voice parameters for pleasant female tone
+            tts?.setPitch(1.12f) // Slightly higher pitch for female voice tone
+            tts?.setSpeechRate(1.02f)
+
+            // Select a female voice if available in voice list
+            try {
+                val voices = tts?.voices
+                if (voices != null) {
+                    val femaleVoice = voices.firstOrNull {
+                        (it.name.lowercase().contains("female") || it.name.lowercase().contains("woman") || it.name.lowercase().contains("india") || it.name.lowercase().contains("en-in") || it.name.lowercase().contains("hi-in")) &&
+                                !it.isNetworkConnectionRequired
+                    } ?: voices.firstOrNull { it.name.lowercase().contains("female") }
+                    if (femaleVoice != null) {
+                        tts?.voice = femaleVoice
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SaraVoice", "Voice query error: ${e.message}")
+            }
+
             isInitialized = true
+            Log.i("SaraVoice", "SARA Female Voice Synthesizer Ready")
         } else {
-            Log.e("JarvisSpeech", "TextToSpeech initialization failed")
+            Log.e("SaraVoice", "TextToSpeech initialization failed")
         }
     }
 
     fun speak(text: String, onComplete: (() -> Unit)? = null) {
         if (!isInitialized || text.isBlank()) return
-        
-        // Strip XML action tags from speech playback
-        val cleanText = text.replaceAllXmlTags()
+
+        val cleanText = cleanTextForSpeech(text)
         if (cleanText.isBlank()) return
 
         tts?.stop()
-        tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, "JARVIS_SPEECH_ID")
+
+        val utteranceId = "SARA_SPEECH_${System.currentTimeMillis()}"
+        if (onComplete != null) {
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(id: String?) {
+                    if (id == utteranceId) onComplete()
+                }
+                override fun onError(utteranceId: String?) {}
+            })
+        }
+
+        tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
     }
 
     fun stop() {
@@ -43,9 +93,14 @@ class JarvisSpeechSynthesizer(context: Context) : TextToSpeech.OnInitListener {
         tts?.shutdown()
     }
 
-    private fun String.replaceAllXmlTags(): String {
-        return this.replace(Regex("<action[^>]*/>"), "")
+    private fun cleanTextForSpeech(raw: String): String {
+        return raw.replace(Regex("<action[^>]*/>"), "")
             .replace(Regex("<action[^>]*>.*?</action>"), "")
+            .replace(Regex("```[a-z]*"), "")
+            .replace(Regex("```"), "")
+            .replace(Regex("\\{[\\s\\S]*?\\}"), "") // Remove raw JSON blocks if any leaked
+            .replace("*", "")
+            .replace("#", "")
             .trim()
     }
 }

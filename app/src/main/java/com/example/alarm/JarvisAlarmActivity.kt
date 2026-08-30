@@ -24,7 +24,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.JarvisSpeechSynthesizer
 import com.example.data.db.JarvisDatabase
+import com.example.data.prefs.PreferencesManager
+import com.example.persona.PersonaType
 import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.SaraPink
+import com.example.ui.theme.SaraRose
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,12 +40,13 @@ class JarvisAlarmActivity : ComponentActivity() {
 
     private var ringtone: Ringtone? = null
     private lateinit var tts: JarvisSpeechSynthesizer
+    private lateinit var prefs: PreferencesManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = JarvisSpeechSynthesizer(this)
+        prefs = PreferencesManager(this)
 
-        // Turn screen on and show over lock screen
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -54,7 +59,6 @@ class JarvisAlarmActivity : ComponentActivity() {
             )
         }
 
-        // Play alarm ringtone
         try {
             val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -73,6 +77,7 @@ class JarvisAlarmActivity : ComponentActivity() {
                 AlarmScreenContent(
                     label = label,
                     timeStr = String.format(Locale.getDefault(), "%02d:%02d", hour, minute),
+                    persona = prefs.activePersona,
                     onDismissAndBriefing = { triggerBriefingAndFinish() },
                     onSnooze = { snoozeAndFinish(hour, minute, label) }
                 )
@@ -88,14 +93,17 @@ class JarvisAlarmActivity : ComponentActivity() {
                 db.jarvisDao().getMemoriesList()
             }
 
-            val todayDate = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())
+            val todayDate = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date())
             val memoryText = if (memories.isNotEmpty()) {
-                "Here are your cataloged neural notes, Boss: " + memories.take(3).joinToString("; ") { it.fact }
-            } else {
-                "No critical tasks logged in your neural memory for today, Sir."
+                "Aapke kuch notes: " + memories.take(2).joinToString("; ") { it.fact }
+            } else ""
+
+            val briefingText = when (prefs.activePersona) {
+                PersonaType.GIRLFRIEND -> "Good morning jaan! Aaj hai $todayDate. $memoryText Utho ab jaldi, main aapka wait kar rahi hoon! 💕"
+                PersonaType.PROFESSIONAL -> "Good morning, Sir. Today is $todayDate. $memoryText All device systems are fully operational."
+                PersonaType.BOLD -> "Good morning! $todayDate ho chuka hai. Uth jao fatfat, aur snooze mat dabana!"
             }
 
-            val briefingText = "Good morning, Boss. Today is $todayDate. $memoryText All sub-systems are fully operational. Have a productive day, Sir."
             tts.speak(briefingText) {
                 finish()
             }
@@ -121,13 +129,14 @@ class JarvisAlarmActivity : ComponentActivity() {
 fun AlarmScreenContent(
     label: String,
     timeStr: String,
+    persona: PersonaType,
     onDismissAndBriefing: () -> Unit,
     onSnooze: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 1.15f,
+        initialValue = 0.92f,
+        targetValue = 1.12f,
         animationSpec = infiniteRepeatable(
             animation = tween(1000, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
@@ -138,7 +147,7 @@ fun AlarmScreenContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF060F1A)),
+            .background(Color(0xFF090D16)),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -147,8 +156,8 @@ fun AlarmScreenContent(
             modifier = Modifier.padding(24.dp)
         ) {
             Text(
-                text = "J.A.R.V.I.S. ALARM PROTOCOL",
-                color = Color(0xFF00E5FF),
+                text = "SARA ALARM PROTOCOL",
+                color = SaraPink,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp
@@ -156,20 +165,19 @@ fun AlarmScreenContent(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Pulsing Arc Reactor Visualizer
             Box(
                 modifier = Modifier
-                    .size((180 * scale).dp)
+                    .size((170 * scale).dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF0D1622))
-                    .border(3.dp, Color(0xFF00E5FF), CircleShape),
+                    .background(Color(0xFF111827))
+                    .border(3.dp, SaraPink, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
                     modifier = Modifier
-                        .size(100.dp)
+                        .size(90.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF00E5FF).copy(alpha = 0.3f))
+                        .background(SaraPink.copy(alpha = 0.3f))
                         .border(2.dp, Color.White, CircleShape)
                 )
             }
@@ -185,7 +193,7 @@ fun AlarmScreenContent(
 
             Text(
                 text = label,
-                color = Color(0xFF80D8FF),
+                color = SaraRose,
                 fontSize = 18.sp,
                 modifier = Modifier.padding(top = 8.dp)
             )
@@ -194,15 +202,15 @@ fun AlarmScreenContent(
 
             Button(
                 onClick = onDismissAndBriefing,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
+                colors = ButtonDefaults.buttonColors(containerColor = SaraPink),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
             ) {
                 Text(
-                    text = "DISMISS & MORNING BRIEFING",
-                    color = Color(0xFF060F1A),
+                    text = "DISMISS & HINGLISH BRIEFING",
+                    color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
@@ -219,7 +227,7 @@ fun AlarmScreenContent(
             ) {
                 Text(
                     text = "SNOOZE (5 MINS)",
-                    color = Color(0xFF00E5FF),
+                    color = SaraPink,
                     fontWeight = FontWeight.Medium
                 )
             }

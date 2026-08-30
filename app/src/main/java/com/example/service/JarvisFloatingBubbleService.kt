@@ -4,8 +4,8 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
@@ -22,12 +22,14 @@ import com.example.audio.JarvisSpeechSynthesizer
 import com.example.data.db.InteractionLog
 import com.example.data.db.JarvisDatabase
 import com.example.data.prefs.PreferencesManager
-import com.example.engine.ActionParser
+import com.example.engine.FastPathClassifier
+import com.example.engine.FastPathResult
 import com.example.engine.LlmEngine
+import com.example.engine.TaskExecutor
+import com.example.persona.PersonaType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class JarvisFloatingBubbleService : Service() {
 
@@ -39,6 +41,7 @@ class JarvisFloatingBubbleService : Service() {
     private lateinit var llmEngine: LlmEngine
     private lateinit var tts: JarvisSpeechSynthesizer
     private lateinit var db: JarvisDatabase
+    private lateinit var executor: TaskExecutor
     private val scope = CoroutineScope(Dispatchers.Main)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -49,17 +52,18 @@ class JarvisFloatingBubbleService : Service() {
         llmEngine = LlmEngine(prefs)
         tts = JarvisSpeechSynthesizer(this)
         db = JarvisDatabase.getInstance(this)
+        executor = TaskExecutor(this, db, llmEngine)
 
         startForegroundServiceNotification()
         setupFloatingBubble()
     }
 
     private fun startForegroundServiceNotification() {
-        val channelId = "jarvis_floating_bubble_channel"
+        val channelId = "sara_floating_bubble_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
-                "J.A.R.V.I.S. Floating Arc Reactor",
+                "SARA Floating Voice Bubble",
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
@@ -67,13 +71,21 @@ class JarvisFloatingBubbleService : Service() {
         }
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("J.A.R.V.I.S. Arc Reactor HUD")
-            .setContentText("Neural logic overlay is active")
+            .setContentTitle("SARA Voice HUD Active")
+            .setContentText("Tap overlay or command SARA anytime in Hinglish")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        startForeground(1001, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            startForeground(
+                1001,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(1001, notification)
+        }
     }
 
     private fun setupFloatingBubble() {
@@ -90,14 +102,15 @@ class JarvisFloatingBubbleService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 100
-            y = 300
+            x = 80
+            y = 350
         }
 
         val container = FrameLayout(this)
         val icon = ImageView(this).apply {
             setImageResource(R.mipmap.ic_launcher)
-            layoutParams = FrameLayout.LayoutParams(140, 140)
+            layoutParams = FrameLayout.LayoutParams(130, 130)
+            setBackgroundColor(Color.TRANSPARENT)
         }
         container.addView(icon)
         bubbleView = container
@@ -119,14 +132,14 @@ class JarvisFloatingBubbleService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     params.x = initialX + (event.rawX - initialTouchX).toInt()
                     params.y = initialY + (event.rawY - initialTouchY).toInt()
-                    windowManager.updateViewLayout(container, params)
+                    try { windowManager.updateViewLayout(container, params) } catch (e: Exception) {}
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     val diffX = Math.abs(event.rawX - initialTouchX)
                     val diffY = Math.abs(event.rawY - initialTouchY)
-                    if (diffX < 10 && diffY < 10) {
-                        toggleMiniTerminalModal()
+                    if (diffX < 12 && diffY < 12) {
+                        showFloatingVoiceHud()
                     }
                     true
                 }
@@ -141,7 +154,7 @@ class JarvisFloatingBubbleService : Service() {
         }
     }
 
-    private fun toggleMiniTerminalModal() {
+    private fun showFloatingVoiceHud() {
         if (isExpanded) return
         isExpanded = true
 
@@ -160,29 +173,30 @@ class JarvisFloatingBubbleService : Service() {
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#060F1A"))
-            setPadding(32, 32, 32, 32)
+            setBackgroundColor(Color.parseColor("#0F172A")) // Deep modern slate
+            setPadding(36, 32, 36, 32)
         }
 
+        val persona = prefs.activePersona
         val title = TextView(this).apply {
-            text = "J.A.R.V.I.S. OVERLAY TERMINAL"
-            setTextColor(Color.parseColor("#00E5FF"))
-            textSize = 14f
+            text = "✨ SARA VOICE HUD (${persona.displayName})"
+            setTextColor(Color.parseColor("#38BDF8"))
+            textSize = 15f
             setPadding(0, 0, 0, 16)
         }
 
         val input = EditText(this).apply {
-            hint = "Command J.A.R.V.I.S...."
-            setHintTextColor(Color.parseColor("#80FFFFFF"))
+            hint = "Speak or type in Hinglish (e.g. 'Mom ko message karo')..."
+            setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#0D1622"))
-            setPadding(24, 24, 24, 24)
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(24, 20, 24, 20)
         }
 
         val statusText = TextView(this).apply {
-            text = "Awaiting command, Boss..."
-            setTextColor(Color.parseColor("#CCCCCC"))
-            textSize = 12f
+            text = "Kahiye, main kya karun aapke liye?"
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 13f
             setPadding(0, 16, 0, 16)
         }
 
@@ -193,57 +207,60 @@ class JarvisFloatingBubbleService : Service() {
 
         val sendBtn = TextView(this).apply {
             text = "EXECUTE"
-            setTextColor(Color.parseColor("#00E5FF"))
+            setTextColor(Color.parseColor("#38BDF8"))
             textSize = 14f
-            setPadding(32, 16, 16, 16)
+            setPadding(28, 16, 16, 16)
             setOnClickListener {
                 val cmd = input.text.toString().trim()
                 if (cmd.isNotBlank()) {
-                    statusText.text = "Processing neural logic..."
+                    statusText.text = "Planning task in Hinglish..."
                     scope.launch {
                         db.jarvisDao().insertLog(InteractionLog(text = cmd, isUser = true))
+
+                        // Check FastPath
+                        val fastPath = FastPathClassifier.classify(cmd, prefs.activePersona, prefs.assistantName)
+                        if (fastPath is FastPathResult.Handled) {
+                            if (fastPath.switchPersona != null) {
+                                prefs.activePersona = fastPath.switchPersona
+                            }
+                            statusText.text = fastPath.immediateReplyHinglish
+                            tts.speak(fastPath.immediateReplyHinglish)
+                            db.jarvisDao().insertLog(InteractionLog(text = fastPath.immediateReplyHinglish, isUser = false))
+
+                            if (fastPath.plan.steps.isNotEmpty()) {
+                                executor.executePlan(
+                                    plan = fastPath.plan,
+                                    onStepUpdated = { p ->
+                                        val running = p.steps.firstOrNull { it.status == com.example.engine.StepStatus.RUNNING }
+                                        if (running != null) statusText.text = running.descriptionHinglish
+                                    },
+                                    onSpeak = { tts.speak(it) }
+                                )
+                            }
+                            return@launch
+                        }
+
+                        // LLM Fallback
                         val memories = db.jarvisDao().getMemoriesList().joinToString("\n") { "- ${it.fact}" }
                         val alarms = db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
+                        val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
 
-                        val result = llmEngine.queryJarvis(cmd, memories, alarms)
-                        result.onSuccess { rawResponse ->
-                            val cleanResponse = ActionParser.stripActionTags(rawResponse)
-                            statusText.text = cleanResponse
-                            tts.speak(cleanResponse)
-                            db.jarvisDao().insertLog(InteractionLog(text = cleanResponse, isUser = false))
+                        val result = llmEngine.planAndQuery(cmd, memories, alarms, screenContext)
+                        result.onSuccess { plan ->
+                            statusText.text = plan.speechResponseHinglish
+                            tts.speak(plan.speechResponseHinglish)
+                            db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
 
-                            val actions = ActionParser.parseActions(rawResponse)
-                            for (action in actions) {
-                                when (action) {
-                                    is com.example.engine.JarvisAction.RememberAction -> {
-                                        db.jarvisDao().insertMemory(com.example.data.db.UserMemory(fact = action.fact, category = action.category))
-                                    }
-                                    is com.example.engine.JarvisAction.SetAlarmAction -> {
-                                        db.jarvisDao().insertAlarm(com.example.data.db.JarvisAlarm(hour = action.hour, minute = action.minute, label = action.label))
-                                        com.example.alarm.JarvisAlarmScheduler.scheduleAlarm(this@JarvisFloatingBubbleService, action.hour, action.minute, action.label)
-                                    }
-                                    is com.example.engine.JarvisAction.AccessibilityAction -> {
-                                        val service = JarvisAccessibilityService.instance
-                                        if (service != null) {
-                                            when (action.actionName.uppercase()) {
-                                                "HOME" -> service.performHome()
-                                                "BACK" -> service.performBack()
-                                                "SCROLL_DOWN" -> service.scrollDown()
-                                                "SCROLL_UP" -> service.scrollUp()
-                                                "TYPE" -> service.typeTextInFocusedInput(action.text)
-                                            }
-                                        }
-                                    }
-                                    is com.example.engine.JarvisAction.OpenAppAction -> {
-                                        try {
-                                            val intent = packageManager.getLaunchIntentForPackage(action.packageName)
-                                            if (intent != null) startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                                        } catch (e: Exception) { e.printStackTrace() }
-                                    }
-                                }
-                            }
+                            executor.executePlan(
+                                plan = plan,
+                                onStepUpdated = { p ->
+                                    val running = p.steps.firstOrNull { it.status == com.example.engine.StepStatus.RUNNING }
+                                    if (running != null) statusText.text = running.descriptionHinglish
+                                },
+                                onSpeak = { tts.speak(it) }
+                            )
                         }.onFailure { err ->
-                            statusText.text = err.message ?: "Execution failed, Boss."
+                            statusText.text = err.message ?: "Task execution error"
                         }
                     }
                 }
@@ -251,14 +268,14 @@ class JarvisFloatingBubbleService : Service() {
         }
 
         val closeBtn = TextView(this).apply {
-            text = "CLOSE"
-            setTextColor(Color.parseColor("#FF5252"))
+            text = "DISMISS"
+            setTextColor(Color.parseColor("#F43F5E"))
             textSize = 14f
             setPadding(16, 16, 16, 16)
             setOnClickListener {
                 try {
                     windowManager.removeView(layout)
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) {}
                 isExpanded = false
             }
         }
@@ -274,7 +291,6 @@ class JarvisFloatingBubbleService : Service() {
         try {
             windowManager.addView(layout, modalParams)
         } catch (e: Exception) {
-            e.printStackTrace()
             isExpanded = false
         }
     }
@@ -282,7 +298,7 @@ class JarvisFloatingBubbleService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         bubbleView?.let {
-            try { windowManager.removeView(it) } catch (e: Exception) { e.printStackTrace() }
+            try { windowManager.removeView(it) } catch (e: Exception) {}
         }
         tts.shutdown()
     }

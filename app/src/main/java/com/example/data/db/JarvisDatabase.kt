@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [InteractionLog::class, UserMemory::class, JarvisAlarm::class],
-    version = 1,
+    entities = [InteractionLog::class, UserMemory::class, JarvisAlarm::class, MacroCache::class],
+    version = 2,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -22,7 +22,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     JarvisDatabase::class.java,
-                    "jarvis_neural_db"
+                    "sara_neural_db"
                 ).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance

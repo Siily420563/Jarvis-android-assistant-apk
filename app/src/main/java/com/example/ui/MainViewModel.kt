@@ -3,12 +3,15 @@ package com.example.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.alarm.JarvisAlarmScheduler
@@ -16,40 +19,43 @@ import com.example.audio.JarvisSpeechSynthesizer
 import com.example.data.db.InteractionLog
 import com.example.data.db.JarvisAlarm
 import com.example.data.db.JarvisDatabase
+import com.example.data.db.MacroCache
 import com.example.data.db.UserMemory
 import com.example.data.prefs.PreferencesManager
-import com.example.engine.ActionParser
-import com.example.engine.JarvisAction
+import com.example.engine.FastPathClassifier
+import com.example.engine.FastPathResult
 import com.example.engine.LlmEngine
+import com.example.engine.TaskExecutor
+import com.example.engine.TaskPlan
+import com.example.persona.PersonaType
 import com.example.service.JarvisAccessibilityService
 import com.example.service.JarvisFloatingBubbleService
+import com.example.util.DeviceActionHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.Locale
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = JarvisDatabase.getInstance(application)
     val prefs = PreferencesManager(application)
-    private val llmEngine = LlmEngine(prefs)
+    val llmEngine = LlmEngine(prefs)
     val tts = JarvisSpeechSynthesizer(application)
+    val executor = TaskExecutor(application, db, llmEngine)
 
-    private val speechRecognizer: SpeechRecognizer? =
-        if (SpeechRecognizer.isRecognitionAvailable(application)) {
-            SpeechRecognizer.createSpeechRecognizer(application)
-        } else null
+    private var speechRecognizer: SpeechRecognizer? = null
 
     val interactionLogs = db.jarvisDao().getAllInteractionLogs()
     val userMemories = db.jarvisDao().getAllMemories()
     val jarvisAlarms = db.jarvisDao().getAllAlarms()
+    val cachedMacros = db.jarvisDao().getAllMacros()
 
     private val _recognizedText = MutableStateFlow("")
     val recognizedText: StateFlow<String> = _recognizedText.asStateFlow()
 
-    private val _jarvisResponse = MutableStateFlow("J.A.R.V.I.S. Neural Core initialized, Boss. Awaiting your command.")
-    val jarvisResponse: StateFlow<String> = _jarvisResponse.asStateFlow()
+    private val _saraResponse = MutableStateFlow("SARA voice assistant active. Awaiting your command in Hinglish!")
+    val saraResponse: StateFlow<String> = _saraResponse.asStateFlow()
 
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
@@ -57,86 +63,156 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
+    private val _activePersona = MutableStateFlow(prefs.activePersona)
+    val activePersona: StateFlow<PersonaType> = _activePersona.asStateFlow()
+
+    private val _currentTaskPlan = MutableStateFlow<TaskPlan?>(null)
+    val currentTaskPlan: StateFlow<TaskPlan?> = _currentTaskPlan.asStateFlow()
+
     private val _isAccessibilityOnline = MutableStateFlow(false)
     val isAccessibilityOnline: StateFlow<Boolean> = _isAccessibilityOnline.asStateFlow()
 
     private val _isOverlayAuthorized = MutableStateFlow(false)
     val isOverlayAuthorized: StateFlow<Boolean> = _isOverlayAuthorized.asStateFlow()
 
+    private val _isBatteryExempted = MutableStateFlow(false)
+    val isBatteryExempted: StateFlow<Boolean> = _isBatteryExempted.asStateFlow()
+
+    private val _isMicGranted = MutableStateFlow(false)
+    val isMicGranted: StateFlow<Boolean> = _isMicGranted.asStateFlow()
+
+    private val _isPhoneContactsGranted = MutableStateFlow(false)
+    val isPhoneContactsGranted: StateFlow<Boolean> = _isPhoneContactsGranted.asStateFlow()
+
     private val _hasAnyKey = MutableStateFlow(prefs.hasAnyApiKey())
     val hasAnyKey: StateFlow<Boolean> = _hasAnyKey.asStateFlow()
 
+    // Confirmation for risky actions (Payments / Deletions)
+    private val _pendingRiskyPlan = MutableStateFlow<TaskPlan?>(null)
+    val pendingRiskyPlan: StateFlow<TaskPlan?> = _pendingRiskyPlan.asStateFlow()
+
     init {
         checkSystemPermissionsStatus()
-        setupSpeechRecognizer()
+        setInitialGreeting()
+    }
+
+    private fun setInitialGreeting() {
+        val greeting = when (prefs.activePersona) {
+            PersonaType.GIRLFRIEND -> "Arey suno na! Main SARA hoon, aapki AI assistant. Batao aaj kya karun aapke liye? 💕"
+            PersonaType.PROFESSIONAL -> "SARA Voice Core initialized, Sir. Ready to execute multi-step automations."
+            PersonaType.BOLD -> "SARA is ready! Sidha bolo kya kaam karwana hai."
+        }
+        _saraResponse.value = greeting
     }
 
     fun checkSystemPermissionsStatus() {
         val context = getApplication<Application>()
         _isAccessibilityOnline.value = JarvisAccessibilityService.isOnline
-        _isOverlayAuthorized.value = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        _isOverlayAuthorized.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(context)
         } else true
+        _isBatteryExempted.value = DeviceActionHelper.isBatteryOptimizationIgnored(context)
+        _isMicGranted.value = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        _isPhoneContactsGranted.value = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
         _hasAnyKey.value = prefs.hasAnyApiKey()
+        _activePersona.value = prefs.activePersona
     }
 
-    private fun setupSpeechRecognizer() {
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                _isListening.value = true
-            }
+    private fun getOrCreateSpeechRecognizer(): SpeechRecognizer? {
+        if (speechRecognizer != null) return speechRecognizer
+        val context = getApplication<Application>()
+        return try {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                recognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        _isListening.value = true
+                        _saraResponse.value = "Sun rahi hoon... boliye! (Listening active)"
+                    }
 
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                _isListening.value = false
-            }
+                    override fun onBeginningOfSpeech() {
+                        _isListening.value = true
+                    }
 
-            override fun onError(error: Int) {
-                _isListening.value = false
-                Log.e("MainViewModel", "Speech recognition error code: $error")
-            }
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
 
-            override fun onResults(results: Bundle?) {
-                _isListening.value = false
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
-                    val query = matches[0]
-                    _recognizedText.value = query
-                    executeCommand(query)
-                }
-            }
+                    override fun onEndOfSpeech() {
+                        _isListening.value = false
+                    }
 
-            override fun onPartialResults(partialResults: Bundle?) {
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
-                    _recognizedText.value = matches[0]
-                }
-            }
+                    override fun onError(error: Int) {
+                        _isListening.value = false
+                        Log.e("MainViewModel", "Speech recognition error code: $error")
+                        val isGf = prefs.activePersona == PersonaType.GIRLFRIEND
+                        val hint = when (error) {
+                            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                                if (isGf) "Aapki awaaz nahi aayi! Quick command tap karo ya type karke batao 💕" else "Awaaz detect nahi hui. Neeche commands tap karein ya text type karein."
+                            SpeechRecognizer.ERROR_AUDIO, SpeechRecognizer.ERROR_CLIENT ->
+                                "Microphone stream active nahi hai. Neeche commands tap karein ya text likhein!"
+                            else ->
+                                "Voice standby mode. Quick chip tap karein ya direct message type karein!"
+                        }
+                        _saraResponse.value = hint
+                    }
 
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
+                    override fun onResults(results: Bundle?) {
+                        _isListening.value = false
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            val query = matches[0]
+                            _recognizedText.value = query
+                            executeUserCommand(query)
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            _recognizedText.value = matches[0]
+                        }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+                speechRecognizer = recognizer
+                recognizer
+            } else null
+        } catch (e: Throwable) {
+            Log.w("MainViewModel", "SpeechRecognizer not available: ${e.message}")
+            null
+        }
     }
 
     fun startListening() {
-        if (!prefs.hasAnyApiKey()) {
-            _jarvisResponse.value = "Boss, please configure at least one API key in the Brain tab before sending commands."
-            tts.speak(_jarvisResponse.value)
-            return
-        }
-
-        if (speechRecognizer != null) {
+        val recognizer = getOrCreateSpeechRecognizer()
+        if (recognizer != null) {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN") // Native English & Hinglish support
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
+                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
             }
-            speechRecognizer.startListening(intent)
-            _isListening.value = true
+            try {
+                recognizer.startListening(intent)
+                _isListening.value = true
+                _saraResponse.value = "Listening... Boliye kya hukum hai? 🎤"
+            } catch (e: Exception) {
+                _isListening.value = false
+                val msg = "Listening start nahi ho payi. Neeche commands tap karein ya likhein!"
+                _saraResponse.value = msg
+            }
         } else {
-            _jarvisResponse.value = "Speech recognition service unavailable on this device, Boss. Please use typed terminal input."
-            tts.speak(_jarvisResponse.value)
+            _isListening.value = false
+            val msg = "Speech recognizer emulator me limited hai. Neeche quick commands tap karein ya text type karein!"
+            _saraResponse.value = msg
+            tts.speak(msg)
         }
     }
 
@@ -145,114 +221,163 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isListening.value = false
     }
 
-    fun executeCommand(userQuery: String) {
-        if (userQuery.isBlank()) return
-        _recognizedText.value = userQuery
+    fun executeUserCommand(query: String) {
+        if (query.isBlank()) return
+        _recognizedText.value = query
+        _pendingRiskyPlan.value = null
 
-        if (!prefs.hasAnyApiKey()) {
-            _jarvisResponse.value = "Boss, please enter an API key in the Brain tab to activate J.A.R.V.I.S."
-            tts.speak(_jarvisResponse.value)
-            return
-        }
-
-        _isProcessing.value = true
         viewModelScope.launch {
-            // Save User Log
-            db.jarvisDao().insertLog(InteractionLog(text = userQuery, isUser = true))
+            // Save User Interaction
+            db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
 
-            // Fetch Memories and Alarms Context
-            val memoriesList = db.jarvisDao().getMemoriesList()
-            val alarmsList = db.jarvisDao().getActiveAlarmsList()
+            // 1. Check FastPath Classifier for instant response
+            val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName)
+            if (fastPath is FastPathResult.Handled) {
+                if (fastPath.switchPersona != null) {
+                    setPersona(fastPath.switchPersona)
+                }
+                _saraResponse.value = fastPath.immediateReplyHinglish
+                tts.speak(fastPath.immediateReplyHinglish)
+                db.jarvisDao().insertLog(InteractionLog(text = fastPath.immediateReplyHinglish, isUser = false))
 
-            val memoriesStr = memoriesList.joinToString("\n") { "- ${it.fact} [${it.category}]" }
-            val alarmsStr = alarmsList.joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
-
-            // Query LLM Cascade Engine
-            val result = llmEngine.queryJarvis(userQuery, memoriesStr, alarmsStr)
-            _isProcessing.value = false
-
-            result.onSuccess { rawResponse ->
-                val cleanText = ActionParser.stripActionTags(rawResponse)
-                _jarvisResponse.value = cleanText
-
-                // Speak response
-                tts.speak(cleanText)
-
-                // Save Jarvis Log
-                db.jarvisDao().insertLog(InteractionLog(text = cleanText, isUser = false))
-
-                // Parse and execute Action Tags
-                val actions = ActionParser.parseActions(rawResponse)
-                executeParsedActions(actions)
-
-            }.onFailure { err ->
-                val errText = err.message ?: "Neural logic pipeline failure, Boss."
-                _jarvisResponse.value = errText
-                tts.speak(errText)
+                if (fastPath.plan.steps.isNotEmpty()) {
+                    _currentTaskPlan.value = fastPath.plan
+                    executor.executePlan(
+                        plan = fastPath.plan,
+                        onStepUpdated = { _currentTaskPlan.value = it },
+                        onSpeak = { tts.speak(it) }
+                    )
+                }
+                return@launch
             }
-        }
-    }
 
-    private fun executeParsedActions(actions: List<JarvisAction>) {
-        viewModelScope.launch {
-            val context = getApplication<Application>()
-            for (action in actions) {
-                when (action) {
-                    is JarvisAction.RememberAction -> {
-                        db.jarvisDao().insertMemory(
-                            UserMemory(fact = action.fact, category = action.category)
-                        )
-                    }
-                    is JarvisAction.SetAlarmAction -> {
-                        val alarmId = (db.jarvisDao().insertAlarm(
-                            JarvisAlarm(hour = action.hour, minute = action.minute, label = action.label)
-                        )).toInt()
-
-                        JarvisAlarmScheduler.scheduleAlarm(
-                            context,
-                            action.hour,
-                            action.minute,
-                            action.label,
-                            alarmId
-                        )
-                    }
-                    is JarvisAction.AccessibilityAction -> {
-                        val service = JarvisAccessibilityService.instance
-                        if (service != null) {
-                            when (action.actionName.uppercase()) {
-                                "HOME" -> service.performHome()
-                                "BACK" -> service.performBack()
-                                "SCROLL_DOWN" -> service.scrollDown()
-                                "SCROLL_UP" -> service.scrollUp()
-                                "TYPE" -> service.typeTextInFocusedInput(action.text)
-                            }
-                        }
-                    }
-                    is JarvisAction.OpenAppAction -> {
-                        try {
-                            val pm = context.packageManager
-                            val intent = pm.getLaunchIntentForPackage(action.packageName)
-                            if (intent != null) {
-                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(intent)
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
+            // 2. Check Macro Cache for instant repeat execution
+            val normalizedKey = query.trim().uppercase().replace(" ", "_")
+            val cachedMacro = db.jarvisDao().findMacroByIntent(normalizedKey)
+            if (cachedMacro != null) {
+                val cachedPlan = TaskPlan.fromJsonString(cachedMacro.taskGraphJson)
+                if (cachedPlan != null) {
+                    _saraResponse.value = cachedPlan.speechResponseHinglish.ifBlank { "Cached task execution start kar rahe hain..." }
+                    _currentTaskPlan.value = cachedPlan
+                    executor.executePlan(
+                        plan = cachedPlan,
+                        onStepUpdated = { _currentTaskPlan.value = it },
+                        onSpeak = { tts.speak(it) }
+                    )
+                    return@launch
                 }
             }
+
+            // 3. Fallback to Planner + LLM Cascade Engine
+            _isProcessing.value = true
+
+            val memoriesList = db.jarvisDao().getMemoriesList()
+            val alarmsList = db.jarvisDao().getActiveAlarmsList()
+            val memoriesStr = memoriesList.joinToString("\n") { "- ${it.fact} [${it.category}]" }
+            val alarmsStr = alarmsList.joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
+            val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
+
+            val planResult = llmEngine.planAndQuery(query, memoriesStr, alarmsStr, screenContext)
+            _isProcessing.value = false
+
+            planResult.onSuccess { plan ->
+                _currentTaskPlan.value = plan
+                _saraResponse.value = plan.speechResponseHinglish
+
+                db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
+
+                if (plan.requiresRiskyConfirmation) {
+                    _pendingRiskyPlan.value = plan
+                    tts.speak(plan.confirmationPrompt)
+                } else {
+                    executor.executePlan(
+                        plan = plan,
+                        onStepUpdated = { _currentTaskPlan.value = it },
+                        onSpeak = { tts.speak(it) }
+                    )
+                }
+            }.onFailure { err ->
+                val errorHinglish = "Kuch gadbad ho gayi: ${err.message ?: "Connection error"}. Kya aap dobara bol sakte hain?"
+                _saraResponse.value = errorHinglish
+                tts.speak(errorHinglish)
+            }
         }
     }
 
-    fun saveApiKeys(groq: String, gemini: String, openRouter: String, preferredLlm: String) {
-        prefs.groqApiKey = groq.trim()
-        prefs.geminiApiKey = gemini.trim()
-        prefs.openRouterApiKey = openRouter.trim()
+    fun confirmPendingRiskyPlan(confirmed: Boolean) {
+        val plan = _pendingRiskyPlan.value ?: return
+        _pendingRiskyPlan.value = null
+        if (confirmed) {
+            viewModelScope.launch {
+                executor.proceedExecution(
+                    plan = plan,
+                    onStepUpdated = { _currentTaskPlan.value = it },
+                    onSpeak = { tts.speak(it) }
+                )
+            }
+        } else {
+            val cancelReply = when (prefs.activePersona) {
+                PersonaType.GIRLFRIEND -> "Theek hai, maine cancel kar diya! Chinta mat karo ❤️"
+                PersonaType.PROFESSIONAL -> "Operation cancelled as requested, Sir."
+                PersonaType.BOLD -> "Cancel kar diya. Safe side!"
+            }
+            _saraResponse.value = cancelReply
+            tts.speak(cancelReply)
+        }
+    }
+
+    fun setPersona(persona: PersonaType) {
+        prefs.activePersona = persona
+        _activePersona.value = persona
+    }
+
+    fun saveSettings(
+        geminiKey: String,
+        groqKey: String,
+        openRouterKey: String,
+        preferredLlm: String,
+        assistantName: String,
+        persona: PersonaType,
+        geminiModel: String = "gemini-3.1-pro-preview",
+        groqModel: String = "llama-3.3-70b-versatile",
+        openRouterModel: String = "anthropic/claude-3.7-sonnet"
+    ) {
+        prefs.geminiApiKey = geminiKey.trim()
+        prefs.groqApiKey = groqKey.trim()
+        prefs.openRouterApiKey = openRouterKey.trim()
+        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.1-pro-preview" }
+        prefs.groqModel = groqModel.trim().ifBlank { "llama-3.3-70b-versatile" }
+        prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-3.7-sonnet" }
         prefs.preferredLlm = preferredLlm
+        prefs.assistantName = assistantName.trim().ifBlank { "SARA" }
+        prefs.activePersona = persona
+        _activePersona.value = persona
         _hasAnyKey.value = prefs.hasAnyApiKey()
-        _jarvisResponse.value = "Neural credentials updated successfully, Sir."
-        tts.speak(_jarvisResponse.value)
+
+        val reply = "Settings update ho gayi hain! SARA is configured with the latest smart models."
+        _saraResponse.value = reply
+        tts.speak(reply)
+    }
+
+    fun toggleFloatingBubble(context: Context) {
+        val newState = !prefs.isFloatingBubbleEnabled
+        prefs.isFloatingBubbleEnabled = newState
+        val intent = Intent(context, JarvisFloatingBubbleService::class.java)
+
+        if (newState) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } else {
+            context.stopService(intent)
+        }
+        checkSystemPermissionsStatus()
+    }
+
+    fun requestBatteryOptimization(context: Context) {
+        DeviceActionHelper.requestIgnoreBatteryOptimization(context)
     }
 
     fun addManualMemory(fact: String, category: String) {
@@ -298,21 +423,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleFloatingBubble(context: Context) {
-        val newState = !prefs.isFloatingBubbleEnabled
-        prefs.isFloatingBubbleEnabled = newState
-        val intent = Intent(context, JarvisFloatingBubbleService::class.java)
-
-        if (newState) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        } else {
-            context.stopService(intent)
+    fun runMacroDirect(macro: MacroCache) {
+        val plan = TaskPlan.fromJsonString(macro.taskGraphJson) ?: return
+        _recognizedText.value = macro.taskDescription
+        _saraResponse.value = "Executing cached macro: ${macro.taskDescription}"
+        _currentTaskPlan.value = plan
+        viewModelScope.launch {
+            executor.executePlan(
+                plan = plan,
+                onStepUpdated = { _currentTaskPlan.value = it },
+                onSpeak = { tts.speak(it) }
+            )
         }
-        checkSystemPermissionsStatus()
+    }
+
+    fun deleteMacro(macro: MacroCache) {
+        viewModelScope.launch {
+            db.jarvisDao().deleteMacro(macro)
+        }
     }
 
     override fun onCleared() {

@@ -10,7 +10,7 @@ import java.util.Calendar
 object JarvisAlarmScheduler {
 
     fun scheduleAlarm(context: Context, hour: Int, minute: Int, label: String, alarmId: Int = (hour * 60 + minute)) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
 
         val intent = Intent(context, JarvisAlarmReceiver::class.java).apply {
             action = "com.aistudio.jarvis.ALARM_TRIGGER"
@@ -61,7 +61,7 @@ object JarvisAlarmScheduler {
     }
 
     fun cancelAlarm(context: Context, hour: Int, minute: Int, alarmId: Int = (hour * 60 + minute)) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val intent = Intent(context, JarvisAlarmReceiver::class.java)
         val pendingIntent = PendingIntent.getBroadcast(
             context,

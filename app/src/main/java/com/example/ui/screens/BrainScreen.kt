@@ -1,26 +1,32 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.persona.PersonaType
 import com.example.ui.MainViewModel
 import com.example.ui.theme.*
 
@@ -28,16 +34,26 @@ import com.example.ui.theme.*
 fun BrainScreen(viewModel: MainViewModel) {
     val prefs = viewModel.prefs
     val hasAnyKey by viewModel.hasAnyKey.collectAsState()
+    val activePersona by viewModel.activePersona.collectAsState()
+    val isAccessibilityOnline by viewModel.isAccessibilityOnline.collectAsState()
+    val isOverlayAuthorized by viewModel.isOverlayAuthorized.collectAsState()
+    val isBatteryExempted by viewModel.isBatteryExempted.collectAsState()
 
-    var groqKey by remember { mutableStateOf(prefs.groqApiKey) }
+    var assistantName by remember { mutableStateOf(prefs.assistantName) }
+    var selectedPersona by remember { mutableStateOf(activePersona) }
     var geminiKey by remember { mutableStateOf(prefs.geminiApiKey) }
+    var geminiModel by remember { mutableStateOf(prefs.geminiModel) }
+    var groqKey by remember { mutableStateOf(prefs.groqApiKey) }
+    var groqModel by remember { mutableStateOf(prefs.groqModel) }
     var openRouterKey by remember { mutableStateOf(prefs.openRouterApiKey) }
+    var openRouterModel by remember { mutableStateOf(prefs.openRouterModel) }
     var preferredLlm by remember { mutableStateOf(prefs.preferredLlm) }
 
-    var showGroqPass by remember { mutableStateOf(false) }
     var showGeminiPass by remember { mutableStateOf(false) }
+    var showGroqPass by remember { mutableStateOf(false) }
     var showOpenRouterPass by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     Column(
@@ -48,122 +64,166 @@ fun BrainScreen(viewModel: MainViewModel) {
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Header
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                imageVector = Icons.Default.Memory,
-                contentDescription = "Neural Core",
-                tint = NeonCyan,
+                imageVector = Icons.Default.AutoAwesome,
+                contentDescription = "SARA Brain",
+                tint = SaraPink,
                 modifier = Modifier.size(28.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "NEURAL CORE & API KEYS",
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
-        }
-
-        // Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = if (hasAnyKey) Color(0xFF0F2D20) else Color(0xFF3B1014)),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(if (hasAnyKey) StatusOnline else StatusOffline)),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = if (hasAnyKey) Icons.Default.CheckCircle else Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = if (hasAnyKey) StatusOnline else StatusOffline,
-                    modifier = Modifier.size(24.dp)
+            Column {
+                Text(
+                    text = "SARA AI & PERSONA STUDIO",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = if (hasAnyKey) "NEURAL PIPELINE ACTIVE" else "API KEY MANDATORY",
-                        color = if (hasAnyKey) StatusOnline else StatusOffline,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = if (hasAnyKey)
-                            "J.A.R.V.I.S. is ready to execute queries and system automation."
-                        else
-                            "No API Key provided. Please enter at least one key below for J.A.R.V.I.S. to function.",
-                        color = TextPrimary,
-                        fontSize = 12.sp
-                    )
-                }
+                Text(
+                    text = "Configure voice personalities, multi-provider LLMs & permissions",
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
             }
         }
 
-        // API Key Input Fields
+        // Assistant Name Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "ASSISTANT NAME",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = assistantName,
+                    onValueChange = { assistantName = it },
+                    label = { Text("Name (e.g. SARA)") },
+                    leadingIcon = { Icon(Icons.Default.Face, contentDescription = null, tint = SaraPink) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = SaraPink,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("assistant_name_input")
+                )
+            }
+        }
+
+        // Persona Selection Cards
         Text(
-            text = "PRIMARY LLM ENDPOINTS",
+            text = "SELECT SARA PERSONALITY MODE",
             color = TextSecondary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp
         )
 
-        // Groq Key
-        OutlinedTextField(
-            value = groqKey,
-            onValueChange = { groqKey = it },
-            label = { Text("Groq API Key (llama-3.3-70b)") },
-            leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = NeonCyan) },
-            trailingIcon = {
-                TextButton(onClick = { showGroqPass = !showGroqPass }) {
-                    Text(if (showGroqPass) "HIDE" else "SHOW", fontSize = 11.sp, color = NeonCyan)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PersonaType.values().forEach { p ->
+                val isSelected = selectedPersona == p
+                val (accentColor, icon) = when (p) {
+                    PersonaType.GIRLFRIEND -> Pair(SaraPink, "💕")
+                    PersonaType.PROFESSIONAL -> Pair(NeonCyan, "👔")
+                    PersonaType.BOLD -> Pair(Color(0xFFF97316), "🔥")
                 }
-            },
-            visualTransformation = if (showGroqPass) VisualTransformation.None else PasswordVisualTransformation(),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonCyan, unfocusedBorderColor = CyberCardBorder),
-            modifier = Modifier.fillMaxWidth()
-        )
 
-        // Gemini Key
-        OutlinedTextField(
-            value = geminiKey,
-            onValueChange = { geminiKey = it },
-            label = { Text("Gemini API Key (gemini-2.5-flash)") },
-            leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = ElegantPurple) },
-            trailingIcon = {
-                TextButton(onClick = { showGeminiPass = !showGeminiPass }) {
-                    Text(if (showGeminiPass) "HIDE" else "SHOW", fontSize = 11.sp, color = ElegantPurple)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("persona_card_${p.name}")
+                        .clickable { selectedPersona = p },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSelected) accentColor.copy(alpha = 0.12f) else CyberCardBg
+                    ),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(
+                            if (isSelected) accentColor else CyberCardBorder
+                        )
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = accentColor.copy(alpha = 0.25f),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(icon, fontSize = 20.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = p.displayName,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (isSelected) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        color = accentColor,
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text(
+                                            text = "ACTIVE",
+                                            color = Color.White,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(2.dp))
+
+                            Text(
+                                text = when (p) {
+                                    PersonaType.GIRLFRIEND -> "Caring, sweet, romantic Hinglish, emotional support, cheerful companion."
+                                    PersonaType.PROFESSIONAL -> "Crisp, concise, respectful, maximum enterprise execution precision."
+                                    PersonaType.BOLD -> "Witty, bindass, sarcastic, direct & humorous unfiltered attitude."
+                                },
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = { selectedPersona = p },
+                            colors = RadioButtonDefaults.colors(selectedColor = accentColor)
+                        )
+                    }
                 }
-            },
-            visualTransformation = if (showGeminiPass) VisualTransformation.None else PasswordVisualTransformation(),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ElegantPurple, unfocusedBorderColor = CyberCardBorder),
-            modifier = Modifier.fillMaxWidth()
-        )
+            }
+        }
 
-        // OpenRouter Key
-        OutlinedTextField(
-            value = openRouterKey,
-            onValueChange = { openRouterKey = it },
-            label = { Text("OpenRouter Key (llama-3-8b)") },
-            leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = NeonBlue) },
-            trailingIcon = {
-                TextButton(onClick = { showOpenRouterPass = !showOpenRouterPass }) {
-                    Text(if (showOpenRouterPass) "HIDE" else "SHOW", fontSize = 11.sp, color = NeonBlue)
-                }
-            },
-            visualTransformation = if (showOpenRouterPass) VisualTransformation.None else PasswordVisualTransformation(),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonBlue, unfocusedBorderColor = CyberCardBorder),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        // Preferred Engine Choice
+        // Multi-Provider LLM Fallback Cascade
         Text(
-            text = "PREFERRED FALLBACK PRIORITY",
+            text = "MULTI-PROVIDER LLM FALLBACK CASCADE (LATEST SMART MODELS)",
             color = TextSecondary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -171,37 +231,446 @@ fun BrainScreen(viewModel: MainViewModel) {
             modifier = Modifier.padding(top = 8.dp)
         )
 
+        // Gemini Key (Primary)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "1. GOOGLE GEMINI (SMARTEST REASONING & VISION)",
+                        color = SaraPink,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Surface(
+                        color = SaraPink.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "PRIMARY",
+                            color = SaraPink,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = geminiKey,
+                    onValueChange = { geminiKey = it },
+                    label = { Text("Gemini API Key") },
+                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = SaraPink) },
+                    trailingIcon = {
+                        TextButton(onClick = { showGeminiPass = !showGeminiPass }) {
+                            Text(if (showGeminiPass) "HIDE" else "SHOW", fontSize = 11.sp, color = SaraPink)
+                        }
+                    },
+                    visualTransformation = if (showGeminiPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = SaraPink,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("gemini_api_key_input")
+                )
+
+                Text("Smartest Gemini Model Selection:", color = TextSecondary, fontSize = 11.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val geminiModels = listOf(
+                        "gemini-3.1-pro-preview" to "gemini-3.1-pro (Smartest)",
+                        "gemini-3.5-flash" to "gemini-3.5-flash (Fast)"
+                    )
+                    geminiModels.forEach { (id, label) ->
+                        FilterChip(
+                            selected = geminiModel == id,
+                            onClick = { geminiModel = id },
+                            label = { Text(label, fontSize = 10.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = SaraPink,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // Groq Key (Fallback 1)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "2. GROQ LPU (ULTRA-FAST INFERENCE)",
+                        color = NeonCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Surface(
+                        color = NeonCyan.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "FALLBACK 1",
+                            color = NeonCyan,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = groqKey,
+                    onValueChange = { groqKey = it },
+                    label = { Text("Groq API Key") },
+                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = NeonCyan) },
+                    trailingIcon = {
+                        TextButton(onClick = { showGroqPass = !showGroqPass }) {
+                            Text(if (showGroqPass) "HIDE" else "SHOW", fontSize = 11.sp, color = NeonCyan)
+                        }
+                    },
+                    visualTransformation = if (showGroqPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("groq_api_key_input")
+                )
+
+                Text("Smartest Groq Model Selection:", color = TextSecondary, fontSize = 11.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val groqModels = listOf(
+                        "llama-3.3-70b-versatile" to "llama-3.3-70b (Smartest)",
+                        "deepseek-r1-distill-llama-70b" to "deepseek-r1-70b (Reasoning)"
+                    )
+                    groqModels.forEach { (id, label) ->
+                        FilterChip(
+                            selected = groqModel == id,
+                            onClick = { groqModel = id },
+                            label = { Text(label, fontSize = 10.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = NeonCyan,
+                                selectedLabelColor = CyberBg
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // OpenRouter Key (Fallback 2)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "3. OPENROUTER (MULTI-MODEL GATEWAY)",
+                        color = NeonBlue,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Surface(
+                        color = NeonBlue.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "FALLBACK 2",
+                            color = NeonBlue,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = openRouterKey,
+                    onValueChange = { openRouterKey = it },
+                    label = { Text("OpenRouter API Key") },
+                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, tint = NeonBlue) },
+                    trailingIcon = {
+                        TextButton(onClick = { showOpenRouterPass = !showOpenRouterPass }) {
+                            Text(if (showOpenRouterPass) "HIDE" else "SHOW", fontSize = 11.sp, color = NeonBlue)
+                        }
+                    },
+                    visualTransformation = if (showOpenRouterPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonBlue,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("openrouter_api_key_input")
+                )
+
+                Text("Smartest OpenRouter Model Selection:", color = TextSecondary, fontSize = 11.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val openRouterModels = listOf(
+                        "anthropic/claude-3.7-sonnet" to "Claude 3.7 Sonnet (Smartest)",
+                        "deepseek/deepseek-r1" to "DeepSeek R1",
+                        "meta-llama/llama-3.3-70b-instruct" to "Llama 3.3 70B"
+                    )
+                    openRouterModels.forEach { (id, label) ->
+                        FilterChip(
+                            selected = openRouterModel == id,
+                            onClick = { openRouterModel = id },
+                            label = { Text(label, fontSize = 10.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = NeonBlue,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // Preferred Engine Choice
+        Text(
+            text = "PREFERRED ENGINE DISPATCH",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val options = listOf("AUTO", "GROQ", "GEMINI", "OPENROUTER")
+            val options = listOf("AUTO", "GEMINI", "GROQ", "OPENROUTER")
             options.forEach { opt ->
                 FilterChip(
                     selected = preferredLlm == opt,
                     onClick = { preferredLlm = opt },
                     label = { Text(opt, fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = NeonCyan,
-                        selectedLabelColor = CyberBg
+                        selectedContainerColor = SaraPink,
+                        selectedLabelColor = Color.White
                     )
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        // System Permissions & Battery Optimization
+        Text(
+            text = "SYSTEM POWER & AUTOMATION PERMISSIONS",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            modifier = Modifier.padding(top = 8.dp)
+        )
 
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Battery Optimization
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Battery Optimization Exemption",
+                            color = TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isBatteryExempted) "Exempted (Background persistence active)" else "Required so Android OS doesn't kill SARA",
+                            color = if (isBatteryExempted) StatusOnline else StatusWarning,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Button(
+                        onClick = { viewModel.requestBatteryOptimization(context) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isBatteryExempted) Color(0xFF1E293B) else SaraPink
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("battery_exemption_btn")
+                    ) {
+                        Text(
+                            text = if (isBatteryExempted) "EXEMPTED" else "REQUEST",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                Divider(color = CyberCardBorder)
+
+                // Accessibility Service
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Accessibility Screen Automation",
+                            color = TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isAccessibilityOnline) "ONLINE (Taps, scrolls & typing active)" else "OFFLINE (Enable in Accessibility Settings)",
+                            color = if (isAccessibilityOnline) StatusOnline else StatusOffline,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isAccessibilityOnline) Color(0xFF1E293B) else NeonCyan
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = if (isAccessibilityOnline) "ACTIVE" else "ENABLE",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isAccessibilityOnline) Color.White else CyberBg
+                        )
+                    }
+                }
+
+                Divider(color = CyberCardBorder)
+
+                // Floating Overlay Bubble
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Floating Voice Bubble",
+                            color = TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isOverlayAuthorized) "Authorized (Overlay over other apps)" else "Disabled (Grant overlay permission)",
+                            color = if (isOverlayAuthorized) StatusOnline else StatusOffline,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            if (isOverlayAuthorized) {
+                                viewModel.toggleFloatingBubble(context)
+                            } else {
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                ).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ElegantPurple),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = if (isOverlayAuthorized) "TOGGLE BUBBLE" else "GRANT",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Save Button
         Button(
             onClick = {
-                viewModel.saveApiKeys(groqKey, geminiKey, openRouterKey, preferredLlm)
+                viewModel.saveSettings(
+                    geminiKey = geminiKey,
+                    groqKey = groqKey,
+                    openRouterKey = openRouterKey,
+                    preferredLlm = preferredLlm,
+                    assistantName = assistantName,
+                    persona = selectedPersona,
+                    geminiModel = geminiModel,
+                    groqModel = groqModel,
+                    openRouterModel = openRouterModel
+                )
             },
-            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+            colors = ButtonDefaults.buttonColors(containerColor = SaraPink),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
+                .testTag("save_settings_btn")
         ) {
-            Text("SAVE CREDENTIALS & ACTIVATE CORE", color = CyberBg, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Icon(Icons.Default.Check, contentDescription = null, tint = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "SAVE SARA SETTINGS & ACTIVATE",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }

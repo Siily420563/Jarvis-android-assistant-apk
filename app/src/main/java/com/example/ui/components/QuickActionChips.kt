@@ -10,7 +10,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.CyberCardBg
@@ -24,16 +24,17 @@ fun QuickActionChips(
     modifier: Modifier = Modifier
 ) {
     val presets = listOf(
-        "Set alarm for 7:30 AM",
-        "Keys study room table par hain",
-        "System Status",
+        "Mom ko WhatsApp pe bolo aa raha hoon",
+        "Alarm lagao kal subah 7:00 AM",
+        "Girlfriend mode on karo",
         "Open YouTube",
-        "Good Morning",
-        "Scroll Down"
+        "Scroll down",
+        "Yaad rakhna mera passport drawer me hai",
+        "Time kya hua hai?"
     )
 
     LazyRow(
-        modifier = modifier,
+        modifier = modifier.testTag("quick_action_chips_row"),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(horizontal = 4.dp)
     ) {

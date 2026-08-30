@@ -13,26 +13,31 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.persona.PersonaType
 import com.example.ui.MainViewModel
 import com.example.ui.screens.AlarmsScreen
 import com.example.ui.screens.BrainScreen
 import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.MacrosScreen
 import com.example.ui.screens.MemoryScreen
 import com.example.ui.theme.*
 
@@ -46,28 +51,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MyApplicationTheme {
-                // Request Record Audio & Notification permissions
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.RequestMultiplePermissions()
-                ) { /* Permissions updated */ }
-
-                LaunchedEffect(Unit) {
-                    val permsToRequest = mutableListOf<String>()
-                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                        permsToRequest.add(Manifest.permission.RECORD_AUDIO)
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                            permsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    }
-                    if (permsToRequest.isNotEmpty()) {
-                        permissionLauncher.launch(permsToRequest.toTypedArray())
+                val micPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { isGranted ->
+                    viewModel.checkSystemPermissionsStatus()
+                    if (isGranted) {
+                        viewModel.startListening()
                     }
                 }
 
                 MainScreenContent(
                     viewModel = viewModel,
+                    onRequestMicPermission = {
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
                     onOpenAccessibilitySettings = {
                         try {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -99,19 +96,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class JarvisTab {
-    HOME, MEMORY, ALARMS, BRAIN
+enum class SaraTab {
+    HOME, MACROS, MEMORY, ALARMS, STUDIO
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreenContent(
     viewModel: MainViewModel,
+    onRequestMicPermission: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit
 ) {
-    var selectedTab by remember { mutableStateOf(JarvisTab.HOME) }
+    var selectedTab by remember { mutableStateOf(SaraTab.HOME) }
     val hasAnyKey by viewModel.hasAnyKey.collectAsState()
+    val activePersona by viewModel.activePersona.collectAsState()
+
+    val personaAccent = when (activePersona) {
+        PersonaType.GIRLFRIEND -> SaraPink
+        PersonaType.PROFESSIONAL -> NeonCyan
+        PersonaType.BOLD -> Color(0xFFF97316)
+    }
 
     Scaffold(
         topBar = {
@@ -119,29 +124,36 @@ fun MainScreenContent(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
-                            shape = androidx.compose.foundation.shape.CircleShape,
-                            color = NeonCyan,
+                            shape = CircleShape,
+                            color = personaAccent,
                             modifier = Modifier.size(10.dp)
                         ) {}
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "J.A.R.V.I.S. NEURAL LINK",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            letterSpacing = 1.5.sp
-                        )
+                        Column {
+                            Text(
+                                text = "SARA NEURAL LINK",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                letterSpacing = 1.5.sp
+                            )
+                            Text(
+                                text = "Mode: ${activePersona.displayName}",
+                                fontSize = 11.sp,
+                                color = personaAccent
+                            )
+                        }
                     }
                 },
                 actions = {
                     Surface(
-                        color = if (hasAnyKey) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                        color = if (hasAnyKey) StatusOnline.copy(alpha = 0.2f) else Color(0xFFF59E0B).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.padding(end = 12.dp)
                     ) {
                         Text(
-                            text = if (hasAnyKey) "CORE ACTIVE" else "KEY NEEDED",
-                            color = if (hasAnyKey) StatusOnline else StatusOffline,
+                            text = if (hasAnyKey) "ONLINE" else "LOCAL AI",
+                            color = if (hasAnyKey) StatusOnline else Color(0xFFF59E0B),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -154,59 +166,74 @@ fun MainScreenContent(
         bottomBar = {
             NavigationBar(
                 containerColor = CyberCardBg,
-                contentColor = NeonCyan
+                contentColor = personaAccent,
+                modifier = Modifier.testTag("sara_navigation_bar")
             ) {
                 NavigationBarItem(
-                    selected = selectedTab == JarvisTab.HOME,
-                    onClick = { selectedTab = JarvisTab.HOME },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
+                    selected = selectedTab == SaraTab.HOME,
+                    onClick = { selectedTab = SaraTab.HOME },
+                    icon = { Icon(Icons.Default.Home, contentDescription = "Home HUD") },
                     label = { Text("HUD", fontSize = 11.sp) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = CyberBg,
-                        selectedTextColor = NeonCyan,
-                        indicatorColor = NeonCyan,
+                        selectedIconColor = Color.White,
+                        selectedTextColor = personaAccent,
+                        indicatorColor = personaAccent.copy(alpha = 0.4f),
                         unselectedIconColor = TextSecondary,
                         unselectedTextColor = TextSecondary
                     )
                 )
 
                 NavigationBarItem(
-                    selected = selectedTab == JarvisTab.MEMORY,
-                    onClick = { selectedTab = JarvisTab.MEMORY },
+                    selected = selectedTab == SaraTab.MACROS,
+                    onClick = { selectedTab = SaraTab.MACROS },
+                    icon = { Icon(Icons.Default.FlashOn, contentDescription = "Macros") },
+                    label = { Text("Macros", fontSize = 11.sp) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color.White,
+                        selectedTextColor = personaAccent,
+                        indicatorColor = personaAccent.copy(alpha = 0.4f),
+                        unselectedIconColor = TextSecondary,
+                        unselectedTextColor = TextSecondary
+                    )
+                )
+
+                NavigationBarItem(
+                    selected = selectedTab == SaraTab.MEMORY,
+                    onClick = { selectedTab = SaraTab.MEMORY },
                     icon = { Icon(Icons.Default.Psychology, contentDescription = "Memory") },
                     label = { Text("Memory", fontSize = 11.sp) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = CyberBg,
-                        selectedTextColor = NeonCyan,
-                        indicatorColor = NeonCyan,
+                        selectedIconColor = Color.White,
+                        selectedTextColor = personaAccent,
+                        indicatorColor = personaAccent.copy(alpha = 0.4f),
                         unselectedIconColor = TextSecondary,
                         unselectedTextColor = TextSecondary
                     )
                 )
 
                 NavigationBarItem(
-                    selected = selectedTab == JarvisTab.ALARMS,
-                    onClick = { selectedTab = JarvisTab.ALARMS },
+                    selected = selectedTab == SaraTab.ALARMS,
+                    onClick = { selectedTab = SaraTab.ALARMS },
                     icon = { Icon(Icons.Default.AccessTime, contentDescription = "Alarms") },
                     label = { Text("Alarms", fontSize = 11.sp) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = CyberBg,
-                        selectedTextColor = NeonCyan,
-                        indicatorColor = NeonCyan,
+                        selectedIconColor = Color.White,
+                        selectedTextColor = personaAccent,
+                        indicatorColor = personaAccent.copy(alpha = 0.4f),
                         unselectedIconColor = TextSecondary,
                         unselectedTextColor = TextSecondary
                     )
                 )
 
                 NavigationBarItem(
-                    selected = selectedTab == JarvisTab.BRAIN,
-                    onClick = { selectedTab = JarvisTab.BRAIN },
-                    icon = { Icon(Icons.Default.Memory, contentDescription = "Brain") },
-                    label = { Text("Brain", fontSize = 11.sp) },
+                    selected = selectedTab == SaraTab.STUDIO,
+                    onClick = { selectedTab = SaraTab.STUDIO },
+                    icon = { Icon(Icons.Default.AutoAwesome, contentDescription = "Persona Studio") },
+                    label = { Text("Studio", fontSize = 11.sp) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = CyberBg,
-                        selectedTextColor = NeonCyan,
-                        indicatorColor = NeonCyan,
+                        selectedIconColor = Color.White,
+                        selectedTextColor = personaAccent,
+                        indicatorColor = personaAccent.copy(alpha = 0.4f),
                         unselectedIconColor = TextSecondary,
                         unselectedTextColor = TextSecondary
                     )
@@ -221,17 +248,21 @@ fun MainScreenContent(
                 .padding(innerPadding)
         ) {
             when (selectedTab) {
-                JarvisTab.HOME -> HomeScreen(
+                SaraTab.HOME -> HomeScreen(
                     viewModel = viewModel,
+                    onRequestMicPermission = onRequestMicPermission,
                     onOpenAccessibilitySettings = onOpenAccessibilitySettings,
                     onOpenOverlaySettings = onOpenOverlaySettings,
-                    onNavigateToBrain = { selectedTab = JarvisTab.BRAIN }
+                    onNavigateToBrain = { selectedTab = SaraTab.STUDIO }
                 )
-                JarvisTab.MEMORY -> MemoryScreen(viewModel = viewModel)
-                JarvisTab.ALARMS -> AlarmsScreen(viewModel = viewModel)
-                JarvisTab.BRAIN -> BrainScreen(viewModel = viewModel)
+                SaraTab.MACROS -> MacrosScreen(
+                    viewModel = viewModel,
+                    onNavigateToHome = { selectedTab = SaraTab.HOME }
+                )
+                SaraTab.MEMORY -> MemoryScreen(viewModel = viewModel)
+                SaraTab.ALARMS -> AlarmsScreen(viewModel = viewModel)
+                SaraTab.STUDIO -> BrainScreen(viewModel = viewModel)
             }
         }
     }
 }
-

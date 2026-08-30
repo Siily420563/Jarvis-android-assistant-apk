@@ -103,7 +103,7 @@ fun AlarmsScreen(viewModel: MainViewModel) {
 
                     Button(
                         onClick = {
-                            viewModel.executeCommand("Good morning, give me my morning briefing")
+                            viewModel.executeUserCommand("Good morning, give me my morning briefing")
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)

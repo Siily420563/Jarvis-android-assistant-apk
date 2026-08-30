@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">J.A.R.V.I.S.</string>
-    <string name="accessibility_service_description">Enables J.A.R.V.I.S. Neural Logic to perform phone navigation, screen scrolling, and automated input gestures on your command, Boss.</string>
+    <string name="app_name">SARA</string>
+    <string name="accessibility_service_description">Enables SARA to control screens, tap buttons, scroll, type text, and automate complex multi-step phone tasks for you in Hinglish.</string>
 </resources>

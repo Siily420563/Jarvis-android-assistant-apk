@@ -1,6 +1,7 @@
 {
-  "name": "J.A.R.V.I.S. AI",
-  "description": "Futuristic voice-controlled AI assistant with neural memory, system automation, floating bubble, and custom alarm briefings.",
+  "name": "SARA",
+  "description": "Voice-controlled personal AI assistant with multi-step planning, screen control automation, multi-provider LLM fallback, and customizable Hinglish personas.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
+

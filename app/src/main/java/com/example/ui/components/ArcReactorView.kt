@@ -3,72 +3,96 @@ package com.example.ui.components
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.example.ui.theme.NeonCyan
-import com.example.ui.theme.NeonCyanGlow
+import com.example.persona.PersonaType
+import com.example.ui.theme.*
 
 @Composable
 fun ArcReactorView(
     isListening: Boolean,
     isProcessing: Boolean,
+    persona: PersonaType = PersonaType.GIRLFRIEND,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "ArcReactorRotation")
+    val infiniteTransition = rememberInfiniteTransition(label = "SaraOrbRotation")
 
-    // Rotation animation for outer rings
+    val (primaryColor, secondaryColor) = when (persona) {
+        PersonaType.GIRLFRIEND -> Pair(SaraPink, SaraRose)
+        PersonaType.PROFESSIONAL -> Pair(NeonCyan, NeonBlue)
+        PersonaType.BOLD -> Pair(Color(0xFFF97316), Color(0xFFEF4444))
+    }
+
     val rotationAngle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(8000, easing = LinearEasing),
+            animation = tween(6000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "rotation"
     )
 
-    // Pulse animation when listening or processing
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
-        targetValue = if (isListening || isProcessing) 1.25f else 1.08f,
+        targetValue = if (isListening) 1.25f else if (isProcessing) 1.18f else 1.05f,
         animationSpec = infiniteRepeatable(
-            animation = tween(if (isListening) 600 else 1800, easing = LinearOutSlowInEasing),
+            animation = tween(if (isListening) 500 else if (isProcessing) 800 else 1800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "pulse"
     )
 
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.93f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 400f),
+        label = "pressScale"
+    )
+
     Box(
         modifier = modifier
-            .size(220.dp)
-            .clickable { onClick() },
+            .size(200.dp)
+            .scale(pressScale)
+            .testTag("sara_voice_orb")
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(bounded = false, radius = 90.dp, color = primaryColor)
+            ) { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(200.dp)) {
+        Canvas(modifier = Modifier.size(190.dp)) {
             val center = Offset(size.width / 2, size.height / 2)
             val radius = (size.width / 2) * pulseScale
 
-            // Glowing Radial Gradient Background
+            // Glowing Outer Atmospheric Halo
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        NeonCyan.copy(alpha = if (isListening) 0.5f else 0.25f),
-                        NeonCyanGlow,
+                        primaryColor.copy(alpha = if (isListening) 0.6f else 0.25f),
+                        secondaryColor.copy(alpha = if (isListening) 0.3f else 0.1f),
                         Color.Transparent
                     ),
                     center = center,
@@ -78,55 +102,58 @@ fun ArcReactorView(
                 center = center
             )
 
-            // Outer Ring
+            // Dynamic Concentric Ring 1
             drawCircle(
-                color = NeonCyan.copy(alpha = 0.8f),
-                radius = radius * 0.8f,
-                style = Stroke(width = 3.dp.toPx())
+                color = primaryColor.copy(alpha = 0.8f),
+                radius = radius * 0.78f,
+                style = Stroke(width = 2.5.dp.toPx())
             )
 
-            // Segmented Inner Ring
+            // Segmented Rotating Outer Crest
             rotate(rotationAngle) {
-                for (i in 0 until 12) {
-                    val angle = i * 30f
-                    val strokeW = if (i % 3 == 0) 4.dp.toPx() else 2.dp.toPx()
+                for (i in 0 until 8) {
+                    val angle = i * 45f
                     drawArc(
-                        color = NeonCyan,
+                        color = secondaryColor,
                         startAngle = angle,
-                        sweepAngle = 18f,
+                        sweepAngle = 24f,
                         useCenter = false,
-                        style = Stroke(width = strokeW)
+                        style = Stroke(width = 3.dp.toPx())
                     )
                 }
             }
 
-            // Reverse Inner Ring
-            rotate(-rotationAngle * 1.5f) {
+            // Counter Rotating Particle Ring
+            rotate(-rotationAngle * 1.6f) {
                 drawCircle(
-                    color = Color.White.copy(alpha = 0.6f),
-                    radius = radius * 0.55f,
+                    color = Color.White.copy(alpha = 0.7f),
+                    radius = radius * 0.52f,
                     style = Stroke(width = 1.5.dp.toPx())
                 )
             }
 
-            // Core Energy Center
+            // Central Pulsing Core
             drawCircle(
-                color = if (isListening) Color(0xFFFF5252) else NeonCyan,
-                radius = radius * 0.35f
-            )
-
-            drawCircle(
-                color = Color.White,
-                radius = radius * 0.20f
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White,
+                        primaryColor,
+                        secondaryColor
+                    ),
+                    center = center,
+                    radius = radius * 0.36f
+                ),
+                radius = radius * 0.36f,
+                center = center
             )
         }
 
         // Center Icon
         Icon(
             imageVector = if (isProcessing) Icons.Default.GraphicEq else Icons.Default.Mic,
-            contentDescription = "Voice Input Arc Reactor",
-            tint = if (isListening) Color.White else Color(0xFF060F1A),
-            modifier = Modifier.size(36.dp)
+            contentDescription = if (isListening) "Listening active" else "Tap to speak with SARA",
+            tint = Color.White,
+            modifier = Modifier.size(34.dp)
         )
     }
 }
