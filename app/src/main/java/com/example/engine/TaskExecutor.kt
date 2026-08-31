@@ -152,23 +152,12 @@ class TaskExecutor(
                 StepType.OPEN_APP -> {
                     val packageName = step.params["packageName"] ?: ""
                     val appName = step.params["appName"] ?: ""
-                    if (packageName.isNotBlank()) {
-                        DeviceActionHelper.launchAppByPackage(context, packageName)
-                    } else if (appName.isNotBlank()) {
-                        // Try common app lookup
-                        val matchedPkg = when (appName.lowercase()) {
-                            "whatsapp" -> "com.whatsapp"
-                            "youtube" -> "com.google.android.youtube"
-                            "instagram" -> "com.instagram.android"
-                            "chrome" -> "com.android.chrome"
-                            "maps" -> "com.google.android.apps.maps"
-                            "spotify" -> "com.spotify.music"
-                            else -> ""
-                        }
-                        if (matchedPkg.isNotBlank()) {
-                            DeviceActionHelper.launchAppByPackage(context, matchedPkg)
-                        } else true
-                    } else true
+                    val target = if (packageName.isNotBlank()) packageName else appName
+                    if (target.isNotBlank()) {
+                        DeviceActionHelper.launchAppByName(context, target)
+                    } else {
+                        DeviceActionHelper.launchAppByName(context, "youtube")
+                    }
                 }
 
                 StepType.SEND_WHATSAPP -> {

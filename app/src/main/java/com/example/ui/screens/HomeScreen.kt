@@ -57,14 +57,24 @@ fun HomeScreen(
     var typedCommand by remember { mutableStateOf("") }
     val context = LocalContext.current
 
-    val onMicAction = {
+    val onOrbClick = {
+        if (!isMicGranted) {
+            onRequestMicPermission()
+        } else {
+            viewModel.toggleContinuousOrbMode()
+        }
+    }
+
+    val onChatMicClick = {
         if (isListening) {
             viewModel.stopListening()
         } else {
             if (!isMicGranted) {
                 onRequestMicPermission()
             } else {
-                viewModel.startListening()
+                viewModel.startSingleTurnMic { recognized ->
+                    typedCommand = recognized
+                }
             }
         }
     }
@@ -161,11 +171,11 @@ fun HomeScreen(
                     isListening = isListening,
                     isProcessing = isProcessing,
                     persona = activePersona,
-                    onClick = onMicAction
+                    onClick = onOrbClick
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = if (isListening) "🎤 Listening... (Tap Orb to Stop)" else if (isProcessing) "⚡ Processing Neural Pipeline..." else "✨ Tap Orb to Speak • Or Tap Quick Commands Below",
+                    text = if (isListening) "🎤 Continuous Listening Active (Tap Orb to Pause)" else if (isProcessing) "⚡ Processing Neural Automation..." else "✨ Tap Orb for Continuous Hands-Free Voice • Or Speak Below",
                     color = when {
                         isListening -> Color(0xFFFF5252)
                         isProcessing -> NeonCyan
@@ -205,7 +215,7 @@ fun HomeScreen(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = onMicAction,
+                    onClick = onChatMicClick,
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(

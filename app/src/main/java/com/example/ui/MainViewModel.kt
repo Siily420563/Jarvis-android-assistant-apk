@@ -124,6 +124,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _activePersona.value = prefs.activePersona
     }
 
+    private var isContinuousListeningMode = false
+    private var singleTurnCallback: ((String) -> Unit)? = null
+
     private fun getOrCreateSpeechRecognizer(): SpeechRecognizer? {
         if (speechRecognizer != null) return speechRecognizer
         val context = getApplication<Application>()
@@ -133,7 +136,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 recognizer.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
                         _isListening.value = true
-                        _saraResponse.value = "Sun rahi hoon... boliye! (Listening active)"
+                        _saraResponse.value = if (isContinuousListeningMode) "Continuous Voice Active: Sun rahi hoon... (Boliye!) 🎤" else "Sun rahi hoon... Boliye! 🎤"
                     }
 
                     override fun onBeginningOfSpeech() {
@@ -160,6 +163,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 "Voice standby mode. Quick chip tap karein ya direct message type karein!"
                         }
                         _saraResponse.value = hint
+
+                        if (isContinuousListeningMode) {
+                            viewModelScope.launch {
+                                kotlinx.coroutines.delay(1200)
+                                if (isContinuousListeningMode) {
+                                    startListeningInternal()
+                                }
+                            }
+                        }
                     }
 
                     override fun onResults(results: Bundle?) {
@@ -168,7 +180,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (!matches.isNullOrEmpty()) {
                             val query = matches[0]
                             _recognizedText.value = query
-                            executeUserCommand(query)
+                            
+                            val callback = singleTurnCallback
+                            singleTurnCallback = null
+                            if (callback != null) {
+                                callback(query)
+                            } else {
+                                executeUserCommand(query)
+                            }
+                        } else {
+                            if (isContinuousListeningMode) {
+                                viewModelScope.launch {
+                                    kotlinx.coroutines.delay(800)
+                                    if (isContinuousListeningMode) {
+                                        startListeningInternal()
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -190,7 +218,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startListening() {
+    private fun startListeningInternal() {
         val recognizer = getOrCreateSpeechRecognizer()
         if (recognizer != null) {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -202,23 +230,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 recognizer.startListening(intent)
                 _isListening.value = true
-                _saraResponse.value = "Listening... Boliye kya hukum hai? 🎤"
             } catch (e: Exception) {
                 _isListening.value = false
-                val msg = "Listening start nahi ho payi. Neeche commands tap karein ya likhein!"
-                _saraResponse.value = msg
             }
-        } else {
-            _isListening.value = false
-            val msg = "Speech recognizer emulator me limited hai. Neeche quick commands tap karein ya text type karein!"
-            _saraResponse.value = msg
-            tts.speak(msg)
         }
+    }
+
+    fun startSingleTurnMic(onTextRecognized: (String) -> Unit) {
+        isContinuousListeningMode = false
+        singleTurnCallback = onTextRecognized
+        startListeningInternal()
+    }
+
+    fun toggleContinuousOrbMode() {
+        if (isContinuousListeningMode) {
+            isContinuousListeningMode = false
+            singleTurnCallback = null
+            stopListening()
+            _saraResponse.value = "Continuous Voice Mode off ho gaya. Tap Orb to reactivate! ✨"
+        } else {
+            isContinuousListeningMode = true
+            singleTurnCallback = null
+            startListeningInternal()
+            _saraResponse.value = "Continuous Voice Mode Active! Bolte rahiye, SARA sun rahi hai... 🎤"
+        }
+    }
+
+    fun startListening() {
+        isContinuousListeningMode = false
+        singleTurnCallback = null
+        startListeningInternal()
     }
 
     fun stopListening() {
         speechRecognizer?.stopListening()
         _isListening.value = false
+    }
+
+    private fun speakAndPromptNext(text: String, onSpeechFinished: (() -> Unit)? = null) {
+        tts.speak(text, apiKey = prefs.geminiApiKey) {
+            onSpeechFinished?.invoke()
+            if (isContinuousListeningMode) {
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(800)
+                    if (isContinuousListeningMode) {
+                        startListeningInternal()
+                    }
+                }
+            }
+        }
     }
 
     fun executeUserCommand(query: String) {
@@ -237,7 +297,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     setPersona(fastPath.switchPersona)
                 }
                 _saraResponse.value = fastPath.immediateReplyHinglish
-                tts.speak(fastPath.immediateReplyHinglish)
+                speakAndPromptNext(fastPath.immediateReplyHinglish)
                 db.jarvisDao().insertLog(InteractionLog(text = fastPath.immediateReplyHinglish, isUser = false))
 
                 if (fastPath.plan.steps.isNotEmpty()) {
@@ -245,7 +305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     executor.executePlan(
                         plan = fastPath.plan,
                         onStepUpdated = { _currentTaskPlan.value = it },
-                        onSpeak = { tts.speak(it) }
+                        onSpeak = { speakAndPromptNext(it) }
                     )
                 }
                 return@launch
@@ -257,12 +317,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (cachedMacro != null) {
                 val cachedPlan = TaskPlan.fromJsonString(cachedMacro.taskGraphJson)
                 if (cachedPlan != null) {
-                    _saraResponse.value = cachedPlan.speechResponseHinglish.ifBlank { "Cached task execution start kar rahe hain..." }
+                    val response = cachedPlan.speechResponseHinglish.ifBlank { "Task execute kar rahe hain..." }
+                    _saraResponse.value = response
                     _currentTaskPlan.value = cachedPlan
+                    speakAndPromptNext(response)
                     executor.executePlan(
                         plan = cachedPlan,
                         onStepUpdated = { _currentTaskPlan.value = it },
-                        onSpeak = { tts.speak(it) }
+                        onSpeak = { speakAndPromptNext(it) }
                     )
                     return@launch
                 }
@@ -288,18 +350,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (plan.requiresRiskyConfirmation) {
                     _pendingRiskyPlan.value = plan
-                    tts.speak(plan.confirmationPrompt)
+                    speakAndPromptNext(plan.confirmationPrompt)
                 } else {
-                    executor.executePlan(
-                        plan = plan,
-                        onStepUpdated = { _currentTaskPlan.value = it },
-                        onSpeak = { tts.speak(it) }
-                    )
+                    speakAndPromptNext(plan.speechResponseHinglish)
+                    if (plan.steps.isNotEmpty()) {
+                        executor.executePlan(
+                            plan = plan,
+                            onStepUpdated = { _currentTaskPlan.value = it },
+                            onSpeak = { speakAndPromptNext(it) }
+                        )
+                    }
                 }
             }.onFailure { err ->
-                val errorHinglish = "Kuch gadbad ho gayi: ${err.message ?: "Connection error"}. Kya aap dobara bol sakte hain?"
+                val errorHinglish = "Kuch issue hua: ${err.message ?: "Connection error"}. Kya aap dobara bol sakte hain?"
                 _saraResponse.value = errorHinglish
-                tts.speak(errorHinglish)
+                speakAndPromptNext(errorHinglish)
             }
         }
     }

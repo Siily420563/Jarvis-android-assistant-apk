@@ -1,37 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Outer Cyan Ring -->
+
+    <!-- Outer Pulsing Glow Ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#3300E5FF"
+        android:strokeWidth="6"
+        android:pathData="M54,54m-30,0a30,30 0 1,0 60,0a30,30 0 1,0 -60,0" />
+
+    <!-- Cyan Arc Segment Ring -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#00E5FF"
-        android:strokeWidth="2.5"
-        android:pathData="M54,54m-32,0a32,32 0 1,0 64,0a32,32 0 1,0 -64,0" />
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M30,54 A24,24 0 0,1 54,30 M78,54 A24,24 0 0,1 54,78" />
 
-    <!-- Inner Segmented Ring -->
+    <!-- Magenta Arc Complementary Ring -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#80D8FF"
-        android:strokeWidth="1.5"
-        android:pathData="M54,54m-24,0a24,24 0 1,0 48,0a24,24 0 1,0 -48,0" />
+        android:strokeColor="#EC4899"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M54,30 A24,24 0 0,1 78,54 M54,78 A24,24 0 0,1 30,54" />
 
-    <!-- Core Arc Reactor Glowing Sphere -->
+    <!-- Central SARA Neural Core Sphere with Gradient -->
     <path
-        android:fillColor="#00E5FF"
-        android:pathData="M54,54m-12,0a12,12 0 1,0 24,0a12,12 0 1,0 -24,0" />
+        android:pathData="M54,54m-17,0a17,17 0 1,0 34,0a17,17 0 1,0 -34,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="37"
+                android:startY="37"
+                android:endX="71"
+                android:endY="71"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00E5FF" />
+                <item android:offset="0.5" android:color="#8B5CF6" />
+                <item android:offset="1.0" android:color="#EC4899" />
+            </gradient>
+        </aapt:attr>
+    </path>
 
-    <!-- Bright Inner Core -->
+    <!-- Inner Glowing AI Diamond Star / Sparkle (SARA Core) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M54,54m-6,0a6,6 0 1,0 12,0a6,6 0 1,0 -12,0" />
+        android:pathData="M54,41 C54,49 50,54 41,54 C50,54 54,59 54,67 C54,59 58,54 67,54 C58,54 54,49 54,41 Z" />
 
-    <!-- Rays / Node Lines -->
+    <!-- 4 Orbiting Satellite Energy Nodes -->
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#00E5FF"
-        android:strokeWidth="1.5"
-        android:pathData="M54,20L54,30 M54,78L54,88 M20,54L30,54 M78,54L88,54 M30,30L37,37 M71,71L78,78 M78,30L71,37 M30,78L37,71" />
+        android:fillColor="#00E5FF"
+        android:pathData="M54,23m-2.5,0a2.5,2.5 0 1,0 5,0a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#EC4899"
+        android:pathData="M54,85m-2.5,0a2.5,2.5 0 1,0 5,0a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#8B5CF6"
+        android:pathData="M23,54m-2.5,0a2.5,2.5 0 1,0 5,0a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M85,54m-2.5,0a2.5,2.5 0 1,0 5,0a2.5,2.5 0 1,0 -5,0" />
 </vector>

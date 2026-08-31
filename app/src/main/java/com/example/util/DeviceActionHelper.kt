@@ -105,7 +105,7 @@ object DeviceActionHelper {
         return try {
             val intent = context.packageManager.getLaunchIntentForPackage(packageName)
             if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                 context.startActivity(intent)
                 true
             } else {
@@ -113,6 +113,150 @@ object DeviceActionHelper {
             }
         } catch (e: Exception) {
             Log.e("DeviceActionHelper", "Error launching app: $packageName", e)
+            false
+        }
+    }
+
+    private val commonPackageAliases = mapOf(
+        "youtube" to "com.google.android.youtube",
+        "yt" to "com.google.android.youtube",
+        "whatsapp" to "com.whatsapp",
+        "wa" to "com.whatsapp",
+        "instagram" to "com.instagram.android",
+        "insta" to "com.instagram.android",
+        "chrome" to "com.android.chrome",
+        "browser" to "com.android.chrome",
+        "camera" to "com.android.camera",
+        "calculator" to "com.google.android.calculator",
+        "calc" to "com.google.android.calculator",
+        "clock" to "com.google.android.deskclock",
+        "alarm" to "com.google.android.deskclock",
+        "settings" to "com.android.settings",
+        "setting" to "com.android.settings",
+        "maps" to "com.google.android.apps.maps",
+        "map" to "com.google.android.apps.maps",
+        "photos" to "com.google.android.apps.photos",
+        "gallery" to "com.google.android.apps.photos",
+        "spotify" to "com.spotify.music",
+        "music" to "com.spotify.music",
+        "gmail" to "com.google.android.gm",
+        "mail" to "com.google.android.gm",
+        "telegram" to "org.telegram.messenger",
+        "tg" to "org.telegram.messenger",
+        "play store" to "com.android.vending",
+        "playstore" to "com.android.vending",
+        "store" to "com.android.vending",
+        "contacts" to "com.google.android.contacts",
+        "phone" to "com.google.android.dialer",
+        "dialer" to "com.google.android.dialer",
+        "messages" to "com.google.android.apps.messaging",
+        "sms" to "com.google.android.apps.messaging",
+        "files" to "com.google.android.apps.nbu.files",
+        "file manager" to "com.google.android.apps.nbu.files",
+        "twitter" to "com.twitter.android",
+        "x" to "com.twitter.android",
+        "facebook" to "com.facebook.katana",
+        "fb" to "com.facebook.katana",
+        "netflix" to "com.netflix.mediaclient",
+        "amazon" to "in.amazon.mShop.android.shopping",
+        "hotstar" to "in.startv.hotstar",
+        "jio cinema" to "com.jio.media.ondemand",
+        "jiocinema" to "com.jio.media.ondemand",
+        "swiggy" to "in.swiggy.android",
+        "zomato" to "com.application.zomato",
+        "paytm" to "net.one97.paytm",
+        "phonepe" to "com.phonepe.app",
+        "gpay" to "com.google.android.apps.nbu.paisa.user",
+        "google pay" to "com.google.android.apps.nbu.paisa.user"
+    )
+
+    fun launchAppByName(context: Context, appName: String): Boolean {
+        val cleanName = appName.trim().lowercase()
+        if (cleanName.isBlank()) return false
+
+        // 1. Direct package name match
+        if (cleanName.contains(".") && launchAppByPackage(context, cleanName)) {
+            return true
+        }
+
+        // 2. Exact or substring match from known aliases
+        for ((alias, pkg) in commonPackageAliases) {
+            if (cleanName == alias || cleanName.contains(alias) || alias.contains(cleanName)) {
+                if (launchAppByPackage(context, pkg)) {
+                    return true
+                }
+            }
+        }
+
+        // 3. Dynamic lookup through all installed launcher activities
+        try {
+            val pm = context.packageManager
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val resolvedList = pm.queryIntentActivities(mainIntent, 0)
+
+            // Try exact label match first
+            for (resolveInfo in resolvedList) {
+                val label = resolveInfo.loadLabel(pm).toString().lowercase()
+                val pkg = resolveInfo.activityInfo.packageName
+                if (label == cleanName || label.contains(cleanName) || cleanName.contains(label)) {
+                    val intent = pm.getLaunchIntentForPackage(pkg)
+                    if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                        context.startActivity(intent)
+                        return true
+                    }
+                }
+            }
+
+            // Try package name match
+            for (resolveInfo in resolvedList) {
+                val pkg = resolveInfo.activityInfo.packageName.lowercase()
+                if (pkg.contains(cleanName)) {
+                    val intent = pm.getLaunchIntentForPackage(resolveInfo.activityInfo.packageName)
+                    if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                        context.startActivity(intent)
+                        return true
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "Error searching launcher apps for '$appName'", e)
+        }
+
+        // 4. Fallback: Check standard Android Settings intents if requested
+        if (cleanName.contains("setting")) {
+            return try {
+                val intent = Intent(Settings.ACTION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                true
+            } catch (e: Exception) { false }
+        }
+
+        return false
+    }
+
+    fun openSettingsScreen(context: Context, settingType: String? = null): Boolean {
+        return try {
+            val action = when (settingType?.lowercase()) {
+                "wifi" -> Settings.ACTION_WIFI_SETTINGS
+                "bluetooth" -> Settings.ACTION_BLUETOOTH_SETTINGS
+                "display" -> Settings.ACTION_DISPLAY_SETTINGS
+                "sound" -> Settings.ACTION_SOUND_SETTINGS
+                "apps", "applications" -> Settings.ACTION_APPLICATION_SETTINGS
+                "accessibility" -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+                else -> Settings.ACTION_SETTINGS
+            }
+            val intent = Intent(action).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
             false
         }
     }

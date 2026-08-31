@@ -59,9 +59,25 @@ class JarvisAccessibilityService : AccessibilityService() {
 
     // --- Screen Node Hierarchy Dumper ---
     fun dumpScreenHierarchy(): List<ScreenNode> {
-        val root = rootInActiveWindow ?: return emptyList()
         val nodes = mutableListOf<ScreenNode>()
-        collectNodes(root, nodes)
+        
+        // 1. Check all windows if available
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val winList = windows
+            if (!winList.isNullOrEmpty()) {
+                for (w in winList) {
+                    val root = w.root ?: continue
+                    collectNodes(root, nodes)
+                }
+                if (nodes.isNotEmpty()) return nodes
+            }
+        }
+
+        // 2. Fallback to active window
+        val root = rootInActiveWindow
+        if (root != null) {
+            collectNodes(root, nodes)
+        }
         return nodes
     }
 
@@ -70,7 +86,7 @@ class JarvisAccessibilityService : AccessibilityService() {
         if (nodes.isEmpty()) return "Screen node hierarchy: Empty or Protected (FLAG_SECURE/Canvas)"
         val sb = StringBuilder()
         sb.append("Current Screen Nodes (${nodes.size} elements):\n")
-        nodes.take(40).forEachIndexed { idx, n ->
+        nodes.take(50).forEachIndexed { idx, n ->
             val desc = if (n.contentDescription.isNotBlank()) " desc='${n.contentDescription}'" else ""
             val txt = if (n.text.isNotBlank()) " text='${n.text}'" else ""
             val id = if (n.viewId.isNotBlank()) " id='${n.viewId}'" else ""
@@ -114,40 +130,43 @@ class JarvisAccessibilityService : AccessibilityService() {
     // --- Interaction Dispatchers ---
 
     fun clickNodeByText(targetText: String, ignoreCase: Boolean = true): Boolean {
-        val root = rootInActiveWindow ?: return false
         val cleanTarget = targetText.trim()
-        val matchedNodes = root.findAccessibilityNodeInfosByText(cleanTarget)
+        if (cleanTarget.isBlank()) return false
 
-        for (node in matchedNodes) {
-            if (node.isClickable) {
-                val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (clicked) return true
-            }
-            // If parent is clickable (common pattern in Android button containers)
-            var parent = node.parent
-            while (parent != null) {
-                if (parent.isClickable) {
-                    val clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (clicked) return true
+        // 1. Try finding by text in root window
+        val root = rootInActiveWindow
+        if (root != null) {
+            val matchedNodes = root.findAccessibilityNodeInfosByText(cleanTarget)
+            for (node in matchedNodes) {
+                if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return true
                 }
-                parent = parent.parent
-            }
-
-            // If ACTION_CLICK failed on node, try clicking center coordinate via gesture
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            if (!rect.isEmpty) {
-                return clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+                var parent = node.parent
+                while (parent != null) {
+                    if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        return true
+                    }
+                    parent = parent.parent
+                }
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (!rect.isEmpty && rect.centerX() > 0 && rect.centerY() > 0) {
+                    return clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
             }
         }
 
-        // Fallback: search through all nodes
+        // 2. Comprehensive search across all nodes dumped from all windows
         val allNodes = dumpScreenHierarchy()
         for (n in allNodes) {
-            if ((n.text.contains(cleanTarget, ignoreCase = ignoreCase) || n.contentDescription.contains(cleanTarget, ignoreCase = ignoreCase)) && !n.bounds.isEmpty) {
+            val matchText = n.text.contains(cleanTarget, ignoreCase = ignoreCase) ||
+                    n.contentDescription.contains(cleanTarget, ignoreCase = ignoreCase) ||
+                    n.viewId.contains(cleanTarget, ignoreCase = ignoreCase)
+            if (matchText && !n.bounds.isEmpty && n.bounds.centerX() > 0 && n.bounds.centerY() > 0) {
                 return clickCoordinates(n.bounds.centerX().toFloat(), n.bounds.centerY().toFloat())
             }
         }
+
         return false
     }
 
