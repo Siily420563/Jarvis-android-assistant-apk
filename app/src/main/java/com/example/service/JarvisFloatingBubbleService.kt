@@ -1,10 +1,13 @@
 package com.example.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -13,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -22,6 +26,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.example.MainActivity
 import com.example.R
 import com.example.audio.JarvisSpeechSynthesizer
 import com.example.data.db.InteractionLog
@@ -36,11 +42,12 @@ import com.example.persona.PersonaType
 import com.example.ui.components.FloatingOrbCanvasView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class JarvisFloatingBubbleService : Service() {
 
-    private lateinit var windowManager: WindowManager
+    private var windowManager: WindowManager? = null
     private var bubbleContainer: FrameLayout? = null
     private var orbView: FloatingOrbCanvasView? = null
     private var hudView: View? = null
@@ -51,7 +58,7 @@ class JarvisFloatingBubbleService : Service() {
     private lateinit var tts: JarvisSpeechSynthesizer
     private lateinit var db: JarvisDatabase
     private lateinit var executor: TaskExecutor
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val scope = CoroutineScope(Dispatchers.Main + Job())
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -62,118 +69,161 @@ class JarvisFloatingBubbleService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        prefs = PreferencesManager(this)
-        llmEngine = LlmEngine(prefs)
-        tts = JarvisSpeechSynthesizer(this)
-        db = JarvisDatabase.getInstance(this)
-        executor = TaskExecutor(this, db, llmEngine)
+        try {
+            prefs = PreferencesManager(this)
+            llmEngine = LlmEngine(prefs)
+            tts = JarvisSpeechSynthesizer(this)
+            db = JarvisDatabase.getInstance(this)
+            executor = TaskExecutor(this, db, llmEngine)
 
-        startForegroundServiceNotification()
-        setupFloatingBubble()
-        initSpeechRecognizer()
+            startForegroundServiceNotification()
+            setupFloatingBubble()
+        } catch (e: Exception) {
+            Log.e("SaraFloating", "Error in onCreate", e)
+        }
     }
 
     private fun startForegroundServiceNotification() {
-        val channelId = "sara_floating_bubble_channel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "SARA Floating Voice Orb",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
+        try {
+            val channelId = "sara_floating_bubble_channel"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "SARA Floating Voice Orb",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Keeps SARA floating assistant accessible anywhere"
+                }
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.createNotificationChannel(channel)
+            }
 
-        val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("SARA Voice Orb Active")
-            .setContentText("Tap glowing orb for continuous hands-free voice automation")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                1001,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            val openAppIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-        } else {
-            startForeground(1001, notification)
+
+            val notification: Notification = NotificationCompat.Builder(this, channelId)
+                .setContentTitle("SARA Voice Orb Active")
+                .setContentText("Tap glowing orb for continuous hands-free voice automation")
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentIntent(pendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // API 34+
+                startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(1001, notification)
+            }
+        } catch (e: Exception) {
+            Log.e("SaraFloating", "Error in startForeground", e)
         }
     }
 
     private fun setupFloatingBubble() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-
-        val params = WindowManager.LayoutParams(
-            220,
-            220,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 80
-            y = 400
-        }
-
-        val container = FrameLayout(this)
-        val orb = FloatingOrbCanvasView(this).apply {
-            persona = prefs.activePersona
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        }
-        container.addView(orb)
-        bubbleContainer = container
-        orbView = orb
-
-        var initialX = 0
-        var initialY = 0
-        var initialTouchX = 0f
-        var initialTouchY = 0f
-
-        container.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    initialX = params.x
-                    initialY = params.y
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    params.x = initialX + (event.rawX - initialTouchX).toInt()
-                    params.y = initialY + (event.rawY - initialTouchY).toInt()
-                    try { windowManager.updateViewLayout(container, params) } catch (e: Exception) {}
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    val diffX = Math.abs(event.rawX - initialTouchX)
-                    val diffY = Math.abs(event.rawY - initialTouchY)
-                    if (diffX < 15 && diffY < 15) {
-                        onOrbTapped()
-                    }
-                    true
-                }
-                else -> false
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.w("SaraFloating", "Overlay permission not granted. Cannot attach bubble view.")
+            return
         }
 
         try {
-            windowManager.addView(container, params)
+            val wm = getSystemService(WINDOW_SERVICE) as? WindowManager ?: return
+            windowManager = wm
+
+            val params = WindowManager.LayoutParams(
+                220,
+                220,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 80
+                y = 450
+            }
+
+            val container = FrameLayout(this)
+            val orb = FloatingOrbCanvasView(this).apply {
+                persona = prefs.activePersona
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            container.addView(orb)
+            bubbleContainer = container
+            orbView = orb
+
+            var initialX = 0
+            var initialY = 0
+            var initialTouchX = 0f
+            var initialTouchY = 0f
+
+            container.setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialX = params.x
+                        initialY = params.y
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        params.x = initialX + (event.rawX - initialTouchX).toInt()
+                        params.y = initialY + (event.rawY - initialTouchY).toInt()
+                        try {
+                            wm.updateViewLayout(container, params)
+                        } catch (e: Exception) {
+                            Log.w("SaraFloating", "Update view layout exception: ${e.message}")
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val diffX = Math.abs(event.rawX - initialTouchX)
+                        val diffY = Math.abs(event.rawY - initialTouchY)
+                        if (diffX < 20 && diffY < 20) {
+                            onOrbTapped()
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
+
+            wm.addView(container, params)
         } catch (e: Exception) {
             Log.e("SaraFloating", "Error adding floating bubble view", e)
         }
     }
 
     private fun initSpeechRecognizer() {
+        val hasMic = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasMic) {
+            Log.w("SaraFloating", "RECORD_AUDIO permission missing.")
+            updateHudStatus("Mic permission needed! Open SARA app to allow.")
+            return
+        }
+
         try {
+            if (speechRecognizer != null) {
+                try { speechRecognizer?.destroy() } catch (e: Exception) {}
+                speechRecognizer = null
+            }
+
             if (SpeechRecognizer.isRecognitionAvailable(this)) {
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
                     setRecognitionListener(object : RecognitionListener {
@@ -202,9 +252,10 @@ class JarvisFloatingBubbleService : Service() {
                             orbView?.isListening = false
                             Log.w("SaraFloating", "Speech error code: $error")
                             if (isContinuousListening) {
-                                // Retry listening after short pause
                                 mainHandler.postDelayed({
-                                    if (isContinuousListening) startListeningLoop()
+                                    if (isContinuousListening && !isCurrentlyListening) {
+                                        startListeningLoop()
+                                    }
                                 }, 1200)
                             } else {
                                 updateHudStatus("Standby mode. Tap orb to speak!")
@@ -220,7 +271,9 @@ class JarvisFloatingBubbleService : Service() {
                                 handleUserVoiceCommand(query)
                             } else if (isContinuousListening) {
                                 mainHandler.postDelayed({
-                                    if (isContinuousListening) startListeningLoop()
+                                    if (isContinuousListening && !isCurrentlyListening) {
+                                        startListeningLoop()
+                                    }
                                 }, 1000)
                             }
                         }
@@ -246,6 +299,16 @@ class JarvisFloatingBubbleService : Service() {
             showFloatingVoiceHud()
         }
 
+        val hasMic = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasMic) {
+            updateHudStatus("Please open SARA app and grant Microphone permission.")
+            return
+        }
+
         if (isContinuousListening) {
             // Stop Continuous Mode
             isContinuousListening = false
@@ -261,7 +324,20 @@ class JarvisFloatingBubbleService : Service() {
     }
 
     private fun startListeningLoop() {
-        if (speechRecognizer == null) initSpeechRecognizer()
+        val hasMic = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasMic) {
+            updateHudStatus("Microphone permission not granted.")
+            return
+        }
+
+        if (speechRecognizer == null) {
+            initSpeechRecognizer()
+        }
+
         val recognizer = speechRecognizer ?: return
         try {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -290,6 +366,8 @@ class JarvisFloatingBubbleService : Service() {
 
     private fun showFloatingVoiceHud() {
         if (isHudVisible) return
+        val wm = windowManager ?: return
+
         isHudVisible = true
 
         val modalParams = WindowManager.LayoutParams(
@@ -377,15 +455,16 @@ class JarvisFloatingBubbleService : Service() {
         hudView = layout
 
         try {
-            windowManager.addView(layout, modalParams)
+            wm.addView(layout, modalParams)
         } catch (e: Exception) {
+            Log.e("SaraFloating", "Error adding HUD layout", e)
             isHudVisible = false
         }
     }
 
     private fun hideFloatingVoiceHud() {
         hudView?.let {
-            try { windowManager.removeView(it) } catch (e: Exception) {}
+            try { windowManager?.removeView(it) } catch (e: Exception) {}
         }
         hudView = null
         isHudVisible = false
@@ -409,61 +488,70 @@ class JarvisFloatingBubbleService : Service() {
         orbView?.isProcessing = true
 
         scope.launch {
-            db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
+            try {
+                db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
 
-            val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName)
-            if (fastPath is FastPathResult.Handled) {
-                if (fastPath.switchPersona != null) {
-                    prefs.activePersona = fastPath.switchPersona
-                    orbView?.persona = fastPath.switchPersona
-                }
-                updateHudStatus(fastPath.immediateReplyHinglish)
-                speakAndContinue(fastPath.immediateReplyHinglish) {
-                    if (fastPath.plan.steps.isNotEmpty()) {
-                        scope.launch {
-                            executor.executePlan(
-                                plan = fastPath.plan,
-                                onStepUpdated = { p ->
-                                    val running = p.steps.firstOrNull { it.status == StepStatus.RUNNING }
-                                    if (running != null) updateHudStatus("⚙️ ${running.descriptionHinglish}")
-                                },
-                                onSpeak = { speakAndContinue(it) }
-                            )
+                val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName)
+                if (fastPath is FastPathResult.Handled) {
+                    if (fastPath.switchPersona != null) {
+                        prefs.activePersona = fastPath.switchPersona
+                        orbView?.persona = fastPath.switchPersona
+                    }
+                    updateHudStatus(fastPath.immediateReplyHinglish)
+                    speakAndContinue(fastPath.immediateReplyHinglish) {
+                        if (fastPath.plan.steps.isNotEmpty()) {
+                            scope.launch {
+                                executor.executePlan(
+                                    plan = fastPath.plan,
+                                    onStepUpdated = { p ->
+                                        val running = p.steps.firstOrNull { it.status == StepStatus.RUNNING }
+                                        if (running != null) updateHudStatus("⚙️ ${running.descriptionHinglish}")
+                                    },
+                                    onSpeak = { speakAndContinue(it) }
+                                )
+                            }
                         }
                     }
+                    return@launch
                 }
-                return@launch
-            }
 
-            val memories = db.jarvisDao().getMemoriesList().joinToString("\n") { "- ${it.fact}" }
-            val alarms = db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
-            val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
+                val memories = db.jarvisDao().getMemoriesList().joinToString("\n") { "- ${it.fact}" }
+                val alarms = db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
+                val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
 
-            val result = llmEngine.planAndQuery(query, memories, alarms, screenContext)
-            orbView?.isProcessing = false
+                val result = llmEngine.planAndQuery(query, memories, alarms, screenContext)
+                orbView?.isProcessing = false
 
-            result.onSuccess { plan ->
-                updateHudStatus(plan.speechResponseHinglish)
-                db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
+                result.onSuccess { plan ->
+                    updateHudStatus(plan.speechResponseHinglish)
+                    db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
 
-                speakAndContinue(plan.speechResponseHinglish) {
-                    if (plan.steps.isNotEmpty()) {
-                        scope.launch {
-                            executor.executePlan(
-                                plan = plan,
-                                onStepUpdated = { p ->
-                                    val running = p.steps.firstOrNull { it.status == StepStatus.RUNNING }
-                                    if (running != null) updateHudStatus("⚙️ ${running.descriptionHinglish}")
-                                },
-                                onSpeak = { speakAndContinue(it) }
-                            )
+                    speakAndContinue(plan.speechResponseHinglish) {
+                        if (plan.steps.isNotEmpty()) {
+                            scope.launch {
+                                executor.executePlan(
+                                    plan = plan,
+                                    onStepUpdated = { p ->
+                                        val running = p.steps.firstOrNull { it.status == StepStatus.RUNNING }
+                                        if (running != null) updateHudStatus("⚙️ ${running.descriptionHinglish}")
+                                    },
+                                    onSpeak = { speakAndContinue(it) }
+                                )
+                            }
                         }
                     }
+                }.onFailure { err ->
+                    val errorMsg = err.message ?: "Task execution error"
+                    updateHudStatus(errorMsg)
+                    speakAndContinue(errorMsg)
                 }
-            }.onFailure { err ->
-                val errorMsg = err.message ?: "Task execution error"
-                updateHudStatus(errorMsg)
-                speakAndContinue(errorMsg)
+            } catch (e: Exception) {
+                Log.e("SaraFloating", "Error executing voice command", e)
+                val fallbackMsg = "Command process karne mein issue aaya."
+                updateHudStatus(fallbackMsg)
+                speakAndContinue(fallbackMsg)
+            } finally {
+                orbView?.isProcessing = false
             }
         }
     }
@@ -473,8 +561,10 @@ class JarvisFloatingBubbleService : Service() {
             onSpeechFinished?.invoke()
             if (isContinuousListening) {
                 mainHandler.postDelayed({
-                    if (isContinuousListening) startListeningLoop()
-                }, 800)
+                    if (isContinuousListening && !isCurrentlyListening) {
+                        startListeningLoop()
+                    }
+                }, 600)
             }
         }
     }
@@ -483,12 +573,14 @@ class JarvisFloatingBubbleService : Service() {
         super.onDestroy()
         isContinuousListening = false
         stopListeningLoop()
-        speechRecognizer?.destroy()
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = null
+        } catch (e: Exception) {}
         hideFloatingVoiceHud()
         bubbleContainer?.let {
-            try { windowManager.removeView(it) } catch (e: Exception) {}
+            try { windowManager?.removeView(it) } catch (e: Exception) {}
         }
         tts.shutdown()
     }
 }
-

@@ -403,14 +403,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferredLlm: String,
         assistantName: String,
         persona: PersonaType,
-        geminiModel: String = "gemini-3.1-pro-preview",
+        geminiModel: String = "gemini-3.7-flash",
         groqModel: String = "llama-3.3-70b-versatile",
         openRouterModel: String = "anthropic/claude-3.7-sonnet"
     ) {
         prefs.geminiApiKey = geminiKey.trim()
         prefs.groqApiKey = groqKey.trim()
         prefs.openRouterApiKey = openRouterKey.trim()
-        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.1-pro-preview" }
+        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.7-flash" }
         prefs.groqModel = groqModel.trim().ifBlank { "llama-3.3-70b-versatile" }
         prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-3.7-sonnet" }
         prefs.preferredLlm = preferredLlm

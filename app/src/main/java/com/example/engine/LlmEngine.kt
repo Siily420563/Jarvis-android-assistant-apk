@@ -18,8 +18,8 @@ import java.util.concurrent.TimeUnit
 class LlmEngine(private val prefs: PreferencesManager) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -105,7 +105,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 })
             }
 
-            val model = prefs.geminiModel.ifBlank { "gemini-3.1-pro-preview" }
+            val model = prefs.geminiModel.ifBlank { "gemini-3.7-flash" }
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key"
             val request = Request.Builder()
                 .url(url)
@@ -264,7 +264,7 @@ If not found, return {"x": -1, "y": -1}.
                 })
             }
 
-            val model = prefs.geminiModel.ifBlank { "gemini-3.1-pro-preview" }
+            val model = prefs.geminiModel.ifBlank { "gemini-3.7-flash" }
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key"
             val request = Request.Builder()
                 .url(url)

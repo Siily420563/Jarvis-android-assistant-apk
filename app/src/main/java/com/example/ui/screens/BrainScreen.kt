@@ -291,8 +291,9 @@ fun BrainScreen(viewModel: MainViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val geminiModels = listOf(
-                        "gemini-3.1-pro-preview" to "gemini-3.1-pro (Smartest)",
-                        "gemini-3.5-flash" to "gemini-3.5-flash (Fast)"
+                        "gemini-3.7-flash" to "gemini-3.7-flash (Latest & Smartest)",
+                        "gemini-2.5-flash" to "gemini-2.5-flash (Fast)",
+                        "gemini-2.5-pro" to "gemini-2.5-pro (Reasoning)"
                     )
                     geminiModels.forEach { (id, label) ->
                         FilterChip(

@@ -187,6 +187,43 @@ object FastPathClassifier {
             return FastPathResult.Handled(plan, reply)
         }
 
+        // 7. Instant Greetings & Personality FastPaths
+        if (clean == "hi" || clean == "hello" || clean == "hey" || clean == "hi sara" || clean == "hello sara" || clean == "sara") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Arey hello ji! Main yahan hoon, batao kya karun aapke liye? 💕"
+                PersonaType.PROFESSIONAL -> "Hello Sir. SARA Voice Link is active and standing by."
+                PersonaType.BOLD -> "Haanji, bolte jao! Kya help chahiye?"
+            }
+            val plan = TaskPlan(query, "GREETING", emptyList(), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean.contains("kaise ho") || clean.contains("kya haal hai") || clean.contains("how are you")) {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Main ekdum badhiya hoon aur aapke saath baat karke aur khush ho gayi! Aap batao aap kaise ho? ❤️"
+                PersonaType.PROFESSIONAL -> "All neural sub-systems are operating at optimal capacity, Sir. How may I assist?"
+                PersonaType.BOLD -> "Main mast bindass hoon! Aap batao kya plan hai?"
+            }
+            val plan = TaskPlan(query, "STATUS", emptyList(), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean.contains("joke sunao") || clean.contains("tell me a joke") || clean.contains("koi joke")) {
+            val jokes = listOf(
+                "Teacher: 10 mein se 10 number laane wale ko kya kehte hain? Pappu: Over-smart!",
+                "Santa ne Google pe search kiya: 'Meri biwi kahan hai?' Google reply: 'Dhoond rahe hain, tab tak shanti se baitho!'",
+                "Doctor: Roz 5 km daudo. Patient: 10 din baad phone karke bola - Doctor sahab, main 50 km door aa gaya, ab ghar kaise aaoon?"
+            )
+            val joke = jokes.random()
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Haha suno! $joke 😂 Kaisa laga?"
+                PersonaType.PROFESSIONAL -> "Humor module executed: $joke"
+                PersonaType.BOLD -> "Ye lo suno: $joke 🤣 Hans lo ab!"
+            }
+            val plan = TaskPlan(query, "JOKE", emptyList(), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
         // Not handled by FastPath -> Send to Planner & LLM
         return FastPathResult.NotHandled
     }

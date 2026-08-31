@@ -38,7 +38,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("gemini_api_key", value).apply()
 
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-3.1-pro-preview") ?: "gemini-3.1-pro-preview"
+        get() = prefs.getString("gemini_model", "gemini-3.7-flash") ?: "gemini-3.7-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var groqApiKey: String
