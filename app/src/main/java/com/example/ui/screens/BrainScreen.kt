@@ -285,15 +285,20 @@ fun BrainScreen(viewModel: MainViewModel) {
                         .testTag("gemini_api_key_input")
                 )
 
-                Text("Smartest Gemini Model Selection:", color = TextSecondary, fontSize = 11.sp)
-                Row(
+                Text("Smartest Gemini Model Selection (AI Studio):", color = TextSecondary, fontSize = 11.sp)
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val geminiModels = listOf(
-                        "gemini-3.7-flash" to "gemini-3.7-flash (Latest & Smartest)",
-                        "gemini-2.5-flash" to "gemini-2.5-flash (Fast)",
-                        "gemini-2.5-pro" to "gemini-2.5-pro (Reasoning)"
+                        "gemini-3.7-flash" to "Gemini 3.7 Flash (Default)",
+                        "gemini-3.6-flash" to "Gemini 3.6 Flash",
+                        "gemini-3.5-flash" to "Gemini 3.5 Flash",
+                        "gemini-3.5-flash-lite" to "Gemini 3.5 Flash Lite",
+                        "gemini-3.1-pro-preview" to "Gemini 3.1 Pro Preview",
+                        "gemini-3.1-flash-lite" to "Gemini 3.1 Flash Lite"
                     )
                     geminiModels.forEach { (id, label) ->
                         FilterChip(

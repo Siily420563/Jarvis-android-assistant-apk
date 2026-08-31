@@ -98,7 +98,30 @@ object FastPathClassifier {
             return FastPathResult.Handled(plan, reply)
         }
 
-        // 3. Direct Simple Alarm FastPath (only if not a complex sentence)
+        // 3. Torch / Flashlight FastPath
+        if (clean == "torch on" || clean == "torch chalu karo" || clean == "torch on karo" || clean == "flashlight on" || clean == "lumos") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Torch on kar di aapke liye! 💡❤️"
+                PersonaType.PROFESSIONAL -> "Torch enabled, Sir."
+                PersonaType.BOLD -> "Torch ON kar di hai!"
+            }
+            val step = TaskStep("torch_on", StepType.TOGGLE_TORCH, mapOf("state" to "ON"), "Turning on Torch")
+            val plan = TaskPlan(query, "TOGGLE_TORCH_ON", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "torch off" || clean == "torch band karo" || clean == "flashlight off" || clean == "nox") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Torch band kar di! ✨"
+                PersonaType.PROFESSIONAL -> "Torch disabled, Sir."
+                PersonaType.BOLD -> "Torch OFF ho gayi."
+            }
+            val step = TaskStep("torch_off", StepType.TOGGLE_TORCH, mapOf("state" to "OFF"), "Turning off Torch")
+            val plan = TaskPlan(query, "TOGGLE_TORCH_OFF", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 4. Direct Simple Alarm FastPath (only if not a complex sentence)
         val isSimpleAlarm = (clean.startsWith("set alarm") || clean.startsWith("alarm laga") || clean.startsWith("alarm set") || clean.startsWith("alarm lagao")) && !clean.contains("whatsapp") && !clean.contains("call")
         if (isSimpleAlarm) {
             val (hour, minute) = parseTimeFromQuery(clean)

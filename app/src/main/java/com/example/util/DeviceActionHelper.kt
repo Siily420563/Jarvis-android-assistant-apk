@@ -1,10 +1,13 @@
 package com.example.util
 
 import android.annotation.SuppressLint
+import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -55,9 +58,39 @@ object DeviceActionHelper {
         }
     }
 
+    private val contactSynonyms = mapOf(
+        "mummy" to listOf("mummy", "mom", "maa", "mother", "mum", "amma", "ammi", "mataji", "मम्मी", "माँ", "माताजी", "माता"),
+        "mom" to listOf("mom", "mummy", "maa", "mother", "mum", "amma", "ammi", "मम्मी", "माँ"),
+        "maa" to listOf("maa", "mom", "mummy", "mother", "amma", "मम्मी", "माँ"),
+        "mother" to listOf("mother", "mummy", "mom", "maa", "मम्मी", "माँ"),
+        "मम्मी" to listOf("मम्मी", "माँ", "माताजी", "mummy", "mom", "maa", "mother"),
+        "माँ" to listOf("माँ", "मम्मी", "माताजी", "mummy", "mom", "maa"),
+        "papa" to listOf("papa", "dad", "father", "daddy", "pitaji", "abbu", "baap", "पापा", "पिताजी", "बाबूजी"),
+        "dad" to listOf("dad", "papa", "father", "daddy", "pitaji", "पापा", "पिताजी"),
+        "father" to listOf("father", "papa", "dad", "pitaji", "पापा", "पिताजी"),
+        "पापा" to listOf("पापा", "पिताजी", "बाबूजी", "papa", "dad", "father"),
+        "पिताजी" to listOf("पिताजी", "पापा", "बाबूजी", "papa", "dad", "father"),
+        "bhai" to listOf("bhai", "brother", "bro", "bhaiya", "bhayya", "bhaiyu", "भाई", "भैया", "भाईजान"),
+        "brother" to listOf("brother", "bhai", "bro", "bhaiya", "भाई", "भैया"),
+        "bro" to listOf("bro", "bhai", "brother", "bhaiya"),
+        "भाई" to listOf("भाई", "भैया", "bhai", "brother", "bro"),
+        "didi" to listOf("didi", "sister", "sis", "behen", "dida", "दीदी", "बहन"),
+        "sister" to listOf("sister", "didi", "sis", "behen", "दीदी", "बहन"),
+        "behen" to listOf("behen", "didi", "sister", "sis", "बहन", "दीदी"),
+        "दीदी" to listOf("दीदी", "बहन", "didi", "sister"),
+        "dost" to listOf("dost", "friend", "yaar", "buddy", "मित्र", "दोस्त"),
+        "friend" to listOf("friend", "dost", "yaar", "buddy", "दोस्त")
+    )
+
     fun findContactByName(context: Context, targetName: String): ContactInfo? {
         val cleanTarget = targetName.trim().lowercase()
+            .replace(Regex("^(ko|pe|par|se|ka|ki|ke)\\s+"), "")
+            .replace(Regex("\\s+(ko|pe|par|se|ka|ki|ke)$"), "")
+            .trim()
         if (cleanTarget.isBlank()) return null
+
+        val searchCandidates = mutableListOf(cleanTarget)
+        contactSynonyms[cleanTarget]?.let { searchCandidates.addAll(it) }
 
         val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
         val projection = arrayOf(
@@ -80,16 +113,31 @@ object DeviceActionHelper {
                 val nameIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                 val numberIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
 
+                val allContacts = mutableListOf<ContactInfo>()
                 while (it.moveToNext()) {
-                    val name = if (nameIdx != -1) it.getString(nameIdx) else ""
-                    val number = if (numberIdx != -1) it.getString(numberIdx) else ""
-
-                    if (name.lowercase().contains(cleanTarget) || cleanTarget.contains(name.lowercase())) {
-                        bestMatch = ContactInfo(name, number.replace(" ", "").replace("-", ""))
-                        if (name.equals(cleanTarget, ignoreCase = true)) {
-                            return bestMatch // Exact match
-                        }
+                    val name = if (nameIdx != -1) it.getString(nameIdx) ?: "" else ""
+                    val number = if (numberIdx != -1) it.getString(numberIdx) ?: "" else ""
+                    if (name.isNotBlank() && number.isNotBlank()) {
+                        allContacts.add(ContactInfo(name, number.replace(" ", "").replace("-", "")))
                     }
+                }
+
+                // 1. Exact match across search candidates
+                for (cand in searchCandidates) {
+                    val exact = allContacts.firstOrNull { it.name.equals(cand, ignoreCase = true) }
+                    if (exact != null) return exact
+                }
+
+                // 2. StartsWith match
+                for (cand in searchCandidates) {
+                    val start = allContacts.firstOrNull { it.name.lowercase().startsWith(cand) }
+                    if (start != null) return start
+                }
+
+                // 3. Substring match
+                for (cand in searchCandidates) {
+                    val sub = allContacts.firstOrNull { it.name.lowercase().contains(cand) || cand.contains(it.name.lowercase()) }
+                    if (sub != null) return sub
                 }
             }
             return bestMatch
@@ -395,6 +443,83 @@ object DeviceActionHelper {
             context.startActivity(intent)
             true
         } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun setTorchMode(context: Context, enabled: Boolean): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+                val cameraId = cameraManager?.cameraIdList?.firstOrNull { id ->
+                    val chars = cameraManager.getCameraCharacteristics(id)
+                    chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                            chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                } ?: cameraManager?.cameraIdList?.firstOrNull()
+
+                if (cameraManager != null && cameraId != null) {
+                    cameraManager.setTorchMode(cameraId, enabled)
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "Torch toggle error: ${e.message}")
+            false
+        }
+    }
+
+    fun searchAndPlayYouTube(context: Context, query: String): Boolean {
+        return try {
+            val cleanQuery = query.trim()
+            val intent = Intent(Intent.ACTION_SEARCH).apply {
+                setPackage("com.google.android.youtube")
+                putExtra("query", cleanQuery)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                true
+            } else {
+                val webIntent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(cleanQuery)}")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(webIntent)
+                true
+            }
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "YouTube search failed", e)
+            false
+        }
+    }
+
+    fun searchGoogle(context: Context, query: String): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_WEB_SEARCH).apply {
+                putExtra(SearchManager.QUERY, query)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                true
+            } else {
+                val webIntent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(webIntent)
+                true
+            }
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "Google search failed", e)
             false
         }
     }

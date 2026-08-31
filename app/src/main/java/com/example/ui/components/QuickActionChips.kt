@@ -24,13 +24,16 @@ fun QuickActionChips(
     modifier: Modifier = Modifier
 ) {
     val presets = listOf(
-        "Mom ko WhatsApp pe bolo aa raha hoon",
+        "WhatsApp pe mummy ko bolo main khelne ja raha hoon",
+        "YouTube pe Arijit Singh ke gaane chalao",
+        "Torch on karo",
+        "Papa ko call lagao",
         "Alarm lagao kal subah 7:00 AM",
+        "Google pe search karo aaj ka mausam",
+        "Kaisi ho SARA?",
         "Girlfriend mode on karo",
-        "Open YouTube",
-        "Scroll down",
         "Yaad rakhna mera passport drawer me hai",
-        "Time kya hua hai?"
+        "Joke sunao"
     )
 
     LazyRow(

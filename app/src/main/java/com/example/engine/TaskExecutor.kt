@@ -152,8 +152,12 @@ class TaskExecutor(
                 StepType.OPEN_APP -> {
                     val packageName = step.params["packageName"] ?: ""
                     val appName = step.params["appName"] ?: ""
+                    val query = step.params["query"] ?: ""
                     val target = if (packageName.isNotBlank()) packageName else appName
-                    if (target.isNotBlank()) {
+
+                    if (target.lowercase().contains("youtube") && query.isNotBlank()) {
+                        DeviceActionHelper.searchAndPlayYouTube(context, query)
+                    } else if (target.isNotBlank()) {
                         DeviceActionHelper.launchAppByName(context, target)
                     } else {
                         DeviceActionHelper.launchAppByName(context, "youtube")
@@ -162,8 +166,71 @@ class TaskExecutor(
 
                 StepType.SEND_WHATSAPP -> {
                     val phone = step.params["phoneNumber"] ?: stepContext["phoneNumber"]
+                    val contactName = step.params["contactName"] ?: step.params["name"] ?: stepContext["contactName"] ?: ""
                     val message = step.params["message"] ?: "Hello"
-                    DeviceActionHelper.openWhatsAppChat(context, phone, message)
+                    val autoSend = step.params["autoSend"]?.toBoolean() ?: true
+
+                    if (!phone.isNullOrBlank()) {
+                        DeviceActionHelper.openWhatsAppChat(context, phone, message)
+                        if (autoSend && JarvisAccessibilityService.isOnline) {
+                            delay(1000)
+                            val service = JarvisAccessibilityService.instance
+                            if (service != null) {
+                                // Attempt clicking the Send button in WhatsApp
+                                val sent = service.clickNodeByText("Send") || 
+                                           service.clickNodeByText("भेजें") || 
+                                           service.clickNodeByText("send")
+                                if (!sent) {
+                                    // Try common send icon coordinates on standard screens if needed
+                                    val nodes = service.dumpScreenHierarchy()
+                                    val sendNode = nodes.firstOrNull { 
+                                        it.contentDescription.contains("Send", ignoreCase = true) || 
+                                        it.contentDescription.contains("भेजें", ignoreCase = true) ||
+                                        it.viewId.contains("send", ignoreCase = true)
+                                    }
+                                    if (sendNode != null && !sendNode.bounds.isEmpty) {
+                                        service.clickCoordinates(sendNode.bounds.centerX().toFloat(), sendNode.bounds.centerY().toFloat())
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    } else {
+                        // Contact not in address book -> Open WhatsApp and use accessibility automation to search and send
+                        DeviceActionHelper.launchAppByName(context, "whatsapp")
+                        val service = JarvisAccessibilityService.instance
+                        if (service != null && contactName.isNotBlank()) {
+                            delay(1000)
+                            // 1. Click search in WhatsApp
+                            service.clickNodeByText("Search") || service.clickNodeByText("खोजें") || service.clickNodeByText("search")
+                            delay(600)
+                            // 2. Type contact name
+                            service.inputText(contactName)
+                            delay(800)
+                            // 3. Click matched contact
+                            service.clickNodeByText(contactName)
+                            delay(800)
+                            // 4. Type message
+                            service.inputText(message)
+                            delay(500)
+                            // 5. Click Send
+                            service.clickNodeByText("Send") || service.clickNodeByText("भेजें") || service.clickNodeByText("send")
+                        }
+                        true
+                    }
+                }
+
+                StepType.TOGGLE_TORCH -> {
+                    val state = step.params["state"]?.uppercase() ?: "ON"
+                    val enable = state != "OFF" && state != "FALSE"
+                    DeviceActionHelper.setTorchMode(context, enable)
+                }
+
+                StepType.SEARCH_WEB -> {
+                    val query = step.params["query"] ?: ""
+                    if (query.isNotBlank()) {
+                        DeviceActionHelper.searchGoogle(context, query)
+                    } else true
                 }
 
                 StepType.SEND_SMS -> {
