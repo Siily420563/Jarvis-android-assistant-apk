@@ -29,6 +29,13 @@ class FloatingOrbCanvasView @JvmOverloads constructor(
             invalidate()
         }
 
+    var isAsleep: Boolean = false
+        set(value) {
+            field = value
+            alpha = if (value) 0.55f else 1.0f
+            invalidate()
+        }
+
     var persona: PersonaType = PersonaType.GIRLFRIEND
         set(value) {
             field = value

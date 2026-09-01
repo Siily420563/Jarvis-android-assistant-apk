@@ -127,7 +127,7 @@ fun SystemAccessCards(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "OVERLAY BUBBLE",
+                    text = "FLOATING ORB",
                     color = TextSecondary,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
@@ -149,7 +149,7 @@ fun SystemAccessCards(
                     modifier = Modifier.height(28.dp)
                 ) {
                     Text(
-                        text = if (isOverlayAuthorized) "TOGGLE BUBBLE" else "GRANT PERMISSION >",
+                        text = if (isOverlayAuthorized) "TOGGLE ORB" else "GRANT PERMISSION >",
                         fontSize = 11.sp,
                         color = ElegantPurple,
                         fontWeight = FontWeight.Bold
