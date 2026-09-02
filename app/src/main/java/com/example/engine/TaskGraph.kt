@@ -28,6 +28,12 @@ enum class StepType {
     STORE_MEMORY,
     TOGGLE_TORCH,
     SEARCH_WEB,
+    CONTROL_VOLUME,
+    OPEN_QUICK_SETTING,
+    MEDIA_CONTROL,
+    NAVIGATE_TO,
+    CHECK_BATTERY,
+    OPEN_CAMERA,
     CONFIRM_RISKY_ACTION,
     ASK_DISAMBIGUATION
 }
@@ -118,3 +124,32 @@ data class TaskPlan(
         }
     }
 }
+
+/**
+ * Captures an interrupted or paused task so that when the user speaks a follow-up or
+ * modification, SARA can merge the old task context with the new instruction.
+ */
+data class InterruptedTaskState(
+    val plan: TaskPlan,
+    val stoppedStepIndex: Int,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    fun summary(): String {
+        val remainingSteps = if (stoppedStepIndex < plan.steps.size) {
+            plan.steps.drop(stoppedStepIndex).map { it.descriptionHinglish }
+        } else emptyList()
+        val stepInfo = if (remainingSteps.isNotEmpty()) {
+            "Paused at step ${stoppedStepIndex + 1}/${plan.steps.size}: '${remainingSteps.first()}'"
+        } else {
+            "Completed steps before pause"
+        }
+        return "Task: '${plan.originalQuery}', $stepInfo. Intent: ${plan.intentKey}"
+    }
+
+    fun remainingSteps(): List<TaskStep> {
+        return if (stoppedStepIndex < plan.steps.size) {
+            plan.steps.drop(stoppedStepIndex)
+        } else emptyList()
+    }
+}
+

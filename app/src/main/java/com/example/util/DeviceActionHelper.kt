@@ -4,17 +4,21 @@ import android.annotation.SuppressLint
 import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.util.Log
+import android.view.KeyEvent
 
 data class ContactInfo(
     val name: String,
@@ -24,6 +28,13 @@ data class ContactInfo(
 data class InstalledAppInfo(
     val name: String,
     val packageName: String
+)
+
+data class BatteryStatus(
+    val percentage: Int,
+    val isCharging: Boolean,
+    val chargePlug: String,
+    val temperatureCelsius: Float
 )
 
 object DeviceActionHelper {
@@ -520,6 +531,184 @@ object DeviceActionHelper {
             }
         } catch (e: Exception) {
             Log.e("DeviceActionHelper", "Google search failed", e)
+            false
+        }
+    }
+
+    fun adjustVolume(context: Context, direction: String, streamType: String = "MEDIA"): Boolean {
+        return try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return false
+            val stream = when (streamType.uppercase()) {
+                "RING", "RINGER" -> android.media.AudioManager.STREAM_RING
+                "ALARM" -> android.media.AudioManager.STREAM_ALARM
+                "NOTIFICATION" -> android.media.AudioManager.STREAM_NOTIFICATION
+                "VOICE_CALL", "CALL" -> android.media.AudioManager.STREAM_VOICE_CALL
+                else -> android.media.AudioManager.STREAM_MUSIC
+            }
+
+            val dir = when (direction.uppercase()) {
+                "UP", "INCREASE", "RAISE" -> android.media.AudioManager.ADJUST_RAISE
+                "DOWN", "DECREASE", "LOWER" -> android.media.AudioManager.ADJUST_LOWER
+                "MUTE" -> android.media.AudioManager.ADJUST_MUTE
+                "UNMUTE" -> android.media.AudioManager.ADJUST_UNMUTE
+                else -> android.media.AudioManager.ADJUST_RAISE
+            }
+
+            audioManager.adjustStreamVolume(stream, dir, android.media.AudioManager.FLAG_SHOW_UI)
+            true
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "adjustVolume failed", e)
+            false
+        }
+    }
+
+    fun setVolumePercent(context: Context, percent: Int, streamType: String = "MEDIA"): Boolean {
+        return try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return false
+            val stream = when (streamType.uppercase()) {
+                "RING", "RINGER" -> android.media.AudioManager.STREAM_RING
+                "ALARM" -> android.media.AudioManager.STREAM_ALARM
+                "NOTIFICATION" -> android.media.AudioManager.STREAM_NOTIFICATION
+                "VOICE_CALL", "CALL" -> android.media.AudioManager.STREAM_VOICE_CALL
+                else -> android.media.AudioManager.STREAM_MUSIC
+            }
+            val maxVol = audioManager.getStreamMaxVolume(stream)
+            val target = ((percent.coerceIn(0, 100) / 100f) * maxVol).toInt()
+            audioManager.setStreamVolume(stream, target, android.media.AudioManager.FLAG_SHOW_UI)
+            true
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "setVolumePercent failed", e)
+            false
+        }
+    }
+
+    fun openQuickSettingPanel(context: Context, panelType: String): Boolean {
+        return try {
+            val action = when (panelType.uppercase()) {
+                "WIFI", "INTERNET" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        Settings.Panel.ACTION_INTERNET_CONNECTIVITY
+                    } else {
+                        Settings.ACTION_WIFI_SETTINGS
+                    }
+                }
+                "BLUETOOTH" -> Settings.ACTION_BLUETOOTH_SETTINGS
+                "VOLUME", "SOUND" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        Settings.Panel.ACTION_VOLUME
+                    } else {
+                        Settings.ACTION_SOUND_SETTINGS
+                    }
+                }
+                "DISPLAY", "BRIGHTNESS" -> Settings.ACTION_DISPLAY_SETTINGS
+                "BATTERY" -> Intent.ACTION_POWER_USAGE_SUMMARY
+                else -> Settings.ACTION_SETTINGS
+            }
+            val intent = Intent(action).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "openQuickSettingPanel failed: $panelType", e)
+            false
+        }
+    }
+
+    fun getBatteryStatus(context: Context): BatteryStatus {
+        return try {
+            val ifilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val batteryStatus: Intent? = context.registerReceiver(null, ifilter)
+            val level: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val pct = if (level >= 0 && scale > 0) ((level / scale.toFloat()) * 100).toInt() else 50
+
+            val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+
+            val chargePlug: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
+            val plugType = when (chargePlug) {
+                BatteryManager.BATTERY_PLUGGED_USB -> "USB"
+                BatteryManager.BATTERY_PLUGGED_AC -> "AC Adapter"
+                BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless"
+                else -> if (isCharging) "Charger" else "Battery"
+            }
+
+            val tempTenths = batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+            val tempC = tempTenths / 10f
+
+            BatteryStatus(pct, isCharging, plugType, tempC)
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "getBatteryStatus error", e)
+            BatteryStatus(75, false, "Battery", 32f)
+        }
+    }
+
+    fun controlMediaPlayback(context: Context, action: String): Boolean {
+        return try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return false
+            val keyCode = when (action.uppercase()) {
+                "PLAY" -> KeyEvent.KEYCODE_MEDIA_PLAY
+                "PAUSE" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+                "STOP" -> KeyEvent.KEYCODE_MEDIA_STOP
+                "NEXT", "SKIP" -> KeyEvent.KEYCODE_MEDIA_NEXT
+                "PREVIOUS", "PREV" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            }
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+            true
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "controlMediaPlayback failed: $action", e)
+            false
+        }
+    }
+
+    fun navigateToDestination(context: Context, destination: String): Boolean {
+        return try {
+            val cleanDest = destination.trim()
+            val navUri = Uri.parse("google.navigation:q=" + Uri.encode(cleanDest))
+            val mapIntent = Intent(Intent.ACTION_VIEW, navUri).apply {
+                setPackage("com.google.android.apps.maps")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (mapIntent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(mapIntent)
+                true
+            } else {
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(cleanDest))).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallbackIntent)
+                true
+            }
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "navigateToDestination failed: $destination", e)
+            false
+        }
+    }
+
+    fun launchCameraMode(context: Context, mode: String = "PHOTO"): Boolean {
+        return try {
+            val intent = when (mode.uppercase()) {
+                "VIDEO" -> Intent(MediaStore.INTENT_ACTION_VIDEO_CAMERA).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                "SELFIE", "FRONT" -> Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
+                    putExtra("android.intent.extras.CAMERA_FACING", 1)
+                    putExtra("android.intent.extra.USE_FRONT_CAMERA", true)
+                    putExtra("android.intent.extras.LENS_FACING_FRONT", 1)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                else -> Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("DeviceActionHelper", "launchCameraMode failed: $mode", e)
             false
         }
     }

@@ -23,7 +23,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     context.applicationContext,
                     JarvisDatabase::class.java,
                     "sara_neural_db"
-                ).fallbackToDestructiveMigration().build()
+                ).fallbackToDestructiveMigration(dropAllTables = true).build()
                 INSTANCE = instance
                 instance
             }

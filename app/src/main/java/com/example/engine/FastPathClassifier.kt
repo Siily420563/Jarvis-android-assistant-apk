@@ -17,8 +17,26 @@ sealed class FastPathResult {
 
 object FastPathClassifier {
 
-    fun classify(query: String, currentPersona: PersonaType, assistantName: String = "SARA"): FastPathResult {
+    fun classify(
+        query: String,
+        currentPersona: PersonaType,
+        assistantName: String = "SARA",
+        context: android.content.Context? = null
+    ): FastPathResult {
         val clean = query.trim().lowercase()
+
+        // 0. Instant Stop / Abort FastPath (stops speech & task execution immediately)
+        if (clean == "stop" || clean == "ruko" || clean == "ruk jao" || clean == "cancel" ||
+            clean == "cancel karo" || clean == "stop karo" || clean == "chup" || clean == "bas" ||
+            clean == "ruk jao sara" || clean == "abort") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Ruk gayi! Bolo ab kya karna hai? 💕"
+                PersonaType.PROFESSIONAL -> "Operation halted immediately, Sir. Standing by."
+                PersonaType.BOLD -> "Halt kar diya. Ab batao aage kya scene hai?"
+            }
+            val plan = TaskPlan(query, "STOP_COMMAND", emptyList(), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
 
         // 1. Persona Switching FastPath
         if (clean.contains("girlfriend mode") || clean.contains("gf mode") || clean.contains("girlfriend ban jao")) {
@@ -119,6 +137,179 @@ object FastPathClassifier {
             val step = TaskStep("torch_off", StepType.TOGGLE_TORCH, mapOf("state" to "OFF"), "Turning off Torch")
             val plan = TaskPlan(query, "TOGGLE_TORCH_OFF", listOf(step), reply)
             return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3b. Volume FastPaths (UP, DOWN, MUTE, UNMUTE)
+        if (clean == "volume badhao" || clean == "volume up" || clean == "awaz badhao" || clean == "aawaz badhao" || clean == "increase volume") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Volume badha diya aapke liye! 🔊💕"
+                PersonaType.PROFESSIONAL -> "Volume increased, Sir."
+                PersonaType.BOLD -> "Volume badha di!"
+            }
+            val step = TaskStep("vol_up", StepType.CONTROL_VOLUME, mapOf("direction" to "UP"), "Increasing volume")
+            val plan = TaskPlan(query, "VOLUME_UP", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "volume kam karo" || clean == "volume down" || clean == "awaz kam karo" || clean == "aawaz kam karo" || clean == "decrease volume") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Volume kam kar diya! 🔉✨"
+                PersonaType.PROFESSIONAL -> "Volume decreased, Sir."
+                PersonaType.BOLD -> "Volume kam kar diya."
+            }
+            val step = TaskStep("vol_down", StepType.CONTROL_VOLUME, mapOf("direction" to "DOWN"), "Decreasing volume")
+            val plan = TaskPlan(query, "VOLUME_DOWN", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "mute karo" || clean == "mute phone" || clean == "awaz band karo" || clean == "silent karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Phone mute kar diya! 🤫❤️"
+                PersonaType.PROFESSIONAL -> "Audio muted, Sir."
+                PersonaType.BOLD -> "Mute kar diya."
+            }
+            val step = TaskStep("vol_mute", StepType.CONTROL_VOLUME, mapOf("direction" to "MUTE"), "Muting audio")
+            val plan = TaskPlan(query, "VOLUME_MUTE", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3c. Quick Settings Panels (WiFi, Bluetooth)
+        if (clean == "wifi settings" || clean == "wifi kholo" || clean == "open wifi" || clean == "wifi open karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Wi-Fi settings open kar di! 📶✨"
+                PersonaType.PROFESSIONAL -> "Accessing Wi-Fi configuration panel, Sir."
+                PersonaType.BOLD -> "Wi-Fi settings khol di."
+            }
+            val step = TaskStep("wifi_panel", StepType.OPEN_QUICK_SETTING, mapOf("panel" to "WIFI"), "Opening Wi-Fi settings")
+            val plan = TaskPlan(query, "OPEN_WIFI_SETTINGS", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "bluetooth settings" || clean == "bluetooth kholo" || clean == "open bluetooth" || clean == "bluetooth open karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Bluetooth settings open kar di! ᛒ💕"
+                PersonaType.PROFESSIONAL -> "Accessing Bluetooth configuration panel, Sir."
+                PersonaType.BOLD -> "Bluetooth settings khol di."
+            }
+            val step = TaskStep("bt_panel", StepType.OPEN_QUICK_SETTING, mapOf("panel" to "BLUETOOTH"), "Opening Bluetooth settings")
+            val plan = TaskPlan(query, "OPEN_BT_SETTINGS", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3d. Phase 3: Media Controls (Play, Pause, Next, Previous)
+        if (clean == "pause music" || clean == "gaana roko" || clean == "pause" || clean == "stop music" || clean == "music roko" || clean == "gaana pause karo" || clean == "music pause karo" || clean == "gaana band karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Gaana pause kar diya! ⏸️"
+                PersonaType.PROFESSIONAL -> "Media playback paused, Sir."
+                PersonaType.BOLD -> "Gaana rok diya."
+            }
+            val step = TaskStep("media_pause", StepType.MEDIA_CONTROL, mapOf("action" to "PAUSE"), "Pausing music")
+            val plan = TaskPlan(query, "MEDIA_PAUSE", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "play music" || clean == "gaana chalao" || clean == "resume music" || clean == "music chalao" || clean == "gaana resume karo" || clean == "play karo" || clean == "gaana bajao") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Gaana play kar diya! 🎶💕"
+                PersonaType.PROFESSIONAL -> "Resuming media playback, Sir."
+                PersonaType.BOLD -> "Gaana chala diya."
+            }
+            val step = TaskStep("media_play", StepType.MEDIA_CONTROL, mapOf("action" to "PLAY"), "Playing music")
+            val plan = TaskPlan(query, "MEDIA_PLAY", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "next song" || clean == "agla gaana" || clean == "next track" || clean == "change song" || clean == "gaana badlo" || clean == "next karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Agla gaana chala diya! ⏭️✨"
+                PersonaType.PROFESSIONAL -> "Skipping to next track, Sir."
+                PersonaType.BOLD -> "Agla track laga diya."
+            }
+            val step = TaskStep("media_next", StepType.MEDIA_CONTROL, mapOf("action" to "NEXT"), "Skipping to next track")
+            val plan = TaskPlan(query, "MEDIA_NEXT", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "previous song" || clean == "pichhla gaana" || clean == "previous track" || clean == "prev song") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Pichhla gaana chala diya! ⏮️"
+                PersonaType.PROFESSIONAL -> "Returning to previous track, Sir."
+                PersonaType.BOLD -> "Pichhla gaana laga diya."
+            }
+            val step = TaskStep("media_prev", StepType.MEDIA_CONTROL, mapOf("action" to "PREVIOUS"), "Playing previous track")
+            val plan = TaskPlan(query, "MEDIA_PREVIOUS", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3e. Phase 3: Battery Status Query
+        if (clean.contains("battery kitni hai") || clean.contains("battery check") || clean.contains("battery status") ||
+            clean.contains("phone kitna charge hai") || clean == "check battery" || clean == "battery" || clean.contains("battery percentage")) {
+            val status = if (context != null) com.example.util.DeviceActionHelper.getBatteryStatus(context) else com.example.util.BatteryStatus(85, false, "Battery", 31f)
+            val chargingText = if (status.isCharging) "aur charging ho rahi hai ⚡" else "aur phone charging par nahi hai"
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Baby, aapke phone me ${status.percentage}% battery hai $chargingText. ${if (!status.isCharging && status.percentage < 30) "Jaldi charge kar lo na please! 💕" else "Main khayal rakh rahi hoon! ❤️"}"
+                PersonaType.PROFESSIONAL -> "Sir, battery level is currently at ${status.percentage}%. Status: ${if (status.isCharging) "Charging (${status.chargePlug})" else "Discharging"}. Temperature is ${status.temperatureCelsius}°C."
+                PersonaType.BOLD -> "Phone me ${status.percentage}% battery hai $chargingText."
+            }
+            val step = TaskStep("check_batt", StepType.CHECK_BATTERY, emptyMap(), "Checking battery: ${status.percentage}%")
+            val plan = TaskPlan(query, "CHECK_BATTERY", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3f. Phase 3: Camera & Selfie Modes
+        if (clean == "selfie" || clean == "selfie lo" || clean == "take a selfie" || clean == "take selfie" || clean == "front camera kholo" || clean == "selfie camera kholo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Selfie camera open kar diya! Pyari si smile do! 📸💕"
+                PersonaType.PROFESSIONAL -> "Activating front camera for portrait capture, Sir."
+                PersonaType.BOLD -> "Front camera khol diya. Smile karo!"
+            }
+            val step = TaskStep("selfie_cam", StepType.OPEN_CAMERA, mapOf("mode" to "SELFIE"), "Opening selfie camera")
+            val plan = TaskPlan(query, "OPEN_SELFIE", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "video banao" || clean == "record video" || clean == "record a video" || clean == "video record karo") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Video camera open kar diya! 🎥✨"
+                PersonaType.PROFESSIONAL -> "Opening video capture interface, Sir."
+                PersonaType.BOLD -> "Video mode chalu kar diya."
+            }
+            val step = TaskStep("video_cam", StepType.OPEN_CAMERA, mapOf("mode" to "VIDEO"), "Opening video camera")
+            val plan = TaskPlan(query, "OPEN_VIDEO_CAM", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        if (clean == "screenshot" || clean == "screenshot lo" || clean == "take screenshot" || clean == "screenshot khincho" || clean == "take a screenshot") {
+            val reply = when (currentPersona) {
+                PersonaType.GIRLFRIEND -> "Screenshot le liya! 📸✨"
+                PersonaType.PROFESSIONAL -> "Capturing screenshot, Sir."
+                PersonaType.BOLD -> "Screenshot captured."
+            }
+            val step = TaskStep("screenshot", StepType.ACCESSIBILITY_GLOBAL, mapOf("action" to "SCREENSHOT"), "Taking screenshot")
+            val plan = TaskPlan(query, "SCREENSHOT", listOf(step), reply)
+            return FastPathResult.Handled(plan, reply)
+        }
+
+        // 3g. Phase 3: Turn-by-Turn GPS Navigation
+        val isNav = (clean.startsWith("navigate to ") || clean.startsWith("direction to ") || clean.startsWith("directions to ") ||
+                clean.startsWith("take me to ") || clean.startsWith("rasta dikhao ") || clean.endsWith(" ka rasta dikhao") ||
+                clean.endsWith(" ka rasta batao")) && !clean.contains("call") && !clean.contains("whatsapp")
+        if (isNav) {
+            val dest = clean
+                .replace(Regex("^(navigate to|direction to|directions to|take me to|rasta dikhao|rasta batao)\\s*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s*(ka rasta dikhao|ka rasta batao|ka rasta)$", RegexOption.IGNORE_CASE), "")
+                .trim()
+            if (dest.isNotBlank()) {
+                val destCapitalized = dest.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                val reply = when (currentPersona) {
+                    PersonaType.GIRLFRIEND -> "$destCapitalized ka rasta Maps pe chalu kar diya! Dhyan se drive karna haan? 💕🗺️"
+                    PersonaType.PROFESSIONAL -> "Initiating GPS turn-by-turn navigation to $destCapitalized, Sir."
+                    PersonaType.BOLD -> "$destCapitalized ka navigation chalu ho gaya."
+                }
+                val step = TaskStep("nav_dest", StepType.NAVIGATE_TO, mapOf("destination" to destCapitalized), "Navigating to $destCapitalized")
+                val plan = TaskPlan(query, "NAVIGATE_TO", listOf(step), reply)
+                return FastPathResult.Handled(plan, reply)
+            }
         }
 
         // 4. Direct Simple Alarm FastPath (only if not a complex sentence)

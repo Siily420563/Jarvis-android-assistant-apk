@@ -24,9 +24,16 @@ fun QuickActionChips(
     modifier: Modifier = Modifier
 ) {
     val presets = listOf(
+        "Battery kitni hai?",
+        "Screenshot lo",
+        "India Gate ka rasta dikhao",
+        "Selfie camera kholo",
+        "Gaana pause karo",
         "WhatsApp pe mummy ko bolo main khelne ja raha hoon",
         "YouTube pe Arijit Singh ke gaane chalao",
         "Torch on karo",
+        "Volume badhao",
+        "Wifi settings kholo",
         "Papa ko call lagao",
         "Alarm lagao kal subah 7:00 AM",
         "Google pe search karo aaj ka mausam",

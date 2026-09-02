@@ -35,19 +35,23 @@ class LlmEngine(private val prefs: PreferencesManager) {
         userInput: String,
         userMemoriesStr: String,
         activeAlarmsStr: String,
-        screenContextStr: String = ""
+        screenContextStr: String = "",
+        conversationHistoryStr: String = "",
+        interruptedTaskState: InterruptedTaskState? = null
     ): Result<TaskPlan> = withContext(Dispatchers.IO) {
         val systemPrompt = SaraSystemPrompt.buildSystemPrompt(
             persona = prefs.activePersona,
             assistantName = prefs.assistantName,
             userMemories = userMemoriesStr,
             activeAlarms = activeAlarmsStr,
-            screenContext = screenContextStr
+            screenContext = screenContextStr,
+            conversationHistory = conversationHistoryStr,
+            interruptedTaskContext = interruptedTaskState?.summary() ?: ""
         )
 
         // Ensure at least one API key is present or fall back to local heuristics
         if (!prefs.hasAnyApiKey()) {
-            val localPlan = runLocalHeuristicPlanner(userInput)
+            val localPlan = runLocalHeuristicPlanner(userInput, interruptedTaskState)
             return@withContext Result.success(
                 localPlan.copy(usedFallback = true, fallbackReason = "No API key configured in Settings")
             )
@@ -104,7 +108,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
 
         // Fallback to local heuristic planner — but now we say WHY instead of pretending
         // this was a normal, fully-reasoned reply.
-        val fallbackPlan = runLocalHeuristicPlanner(userInput)
+        val fallbackPlan = runLocalHeuristicPlanner(userInput, interruptedTaskState)
         val reason = lastErrorReason.ifBlank { "AI provider returned no usable response" }
         Result.success(fallbackPlan.copy(usedFallback = true, fallbackReason = reason))
     }
@@ -130,7 +134,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 })
             }
 
-            val model = prefs.geminiModel.ifBlank { "gemini-3.7-flash" }
+            val model = prefs.geminiModel.ifBlank { "gemini-3.5-flash" }
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key"
             val request = Request.Builder()
                 .url(url)
@@ -284,8 +288,8 @@ If not found, return {"x": -1, "y": -1}.
                         put("parts", JSONArray().apply {
                             put(JSONObject().apply { put("text", prompt) })
                             put(JSONObject().apply {
-                                put("inline_data", JSONObject().apply {
-                                    put("mime_type", "image/jpeg")
+                                put("inlineData", JSONObject().apply {
+                                    put("mimeType", "image/jpeg")
                                     put("data", base64Img)
                                 })
                             })
@@ -297,7 +301,7 @@ If not found, return {"x": -1, "y": -1}.
                 })
             }
 
-            val model = prefs.geminiModel.ifBlank { "gemini-3.7-flash" }
+            val model = prefs.geminiModel.ifBlank { "gemini-3.5-flash" }
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key"
             val request = Request.Builder()
                 .url(url)
@@ -343,9 +347,60 @@ If not found, return {"x": -1, "y": -1}.
         return str.trim()
     }
 
-    private fun runLocalHeuristicPlanner(query: String): TaskPlan {
+    private fun runLocalHeuristicPlanner(query: String, interruptedTask: InterruptedTaskState? = null): TaskPlan {
         val clean = query.trim().lowercase()
         val persona = prefs.activePersona
+
+        // Check if user is resuming or modifying an interrupted task
+        if (interruptedTask != null) {
+            val oldPlan = interruptedTask.plan
+            val isResume = clean == "continue" || clean == "resume" || clean == "aage badho" ||
+                    clean == "chalu karo" || clean == "kar do" || clean == "bhej do" ||
+                    clean == "chalu rakho" || clean.contains("bhejo") && clean.length < 10
+
+            if (isResume) {
+                val remaining = interruptedTask.remainingSteps()
+                val reply = when (persona) {
+                    com.example.persona.PersonaType.GIRLFRIEND -> "Theek hai, main aage ka task complete kar rahi hoon! 💕"
+                    com.example.persona.PersonaType.PROFESSIONAL -> "Resuming pending execution pipeline, Sir."
+                    com.example.persona.PersonaType.BOLD -> "Task wapis shuru kar diya."
+                }
+                return TaskPlan(query, "RESUME_TASK", remaining, reply)
+            }
+
+            // Contact correction: "nahi papa ko bhejo", "papa ko", "nahi rohit ko"
+            val contactChangeMatch = Regex("(?:nahi\\s*)?([a-zA-Z0-9\u0900-\u097F]+)\\s*(?:ko\\s*(?:bhejo|call karo|message karo|send karo)?)?").find(clean)
+            if (contactChangeMatch != null && (clean.startsWith("nahi ") || clean.endsWith(" ko") || clean.contains(" ko "))) {
+                val newContact = contactChangeMatch.groupValues[1]
+                if (newContact.isNotBlank() && newContact != "nahi" && newContact != "bhejo" && newContact != "call") {
+                    val oldMsg = oldPlan.steps.firstOrNull { it.type == StepType.SEND_WHATSAPP }?.params?.get("message") ?: "Hello"
+                    val reply = when (persona) {
+                        com.example.persona.PersonaType.GIRLFRIEND -> "Samajh gayi! Ab $newContact ko WhatsApp bhej rahi hoon: '$oldMsg' ❤️"
+                        com.example.persona.PersonaType.PROFESSIONAL -> "Rerouting task to $newContact: '$oldMsg', Sir."
+                        com.example.persona.PersonaType.BOLD -> "Theek hai, $newContact ko bhej rahi hoon ab."
+                    }
+                    val s1 = TaskStep("step_1", StepType.FIND_CONTACT, mapOf("name" to newContact), "$newContact ka contact dhoond rahe hain...")
+                    val s2 = TaskStep("step_2", StepType.SEND_WHATSAPP, mapOf("contactName" to newContact, "message" to oldMsg, "autoSend" to "true"), "WhatsApp pe message bhej rahe hain...")
+                    return TaskPlan(query, "WHATSAPP_SEND", listOf(s1, s2), reply)
+                }
+            }
+
+            // Message modification: "message badal do ki 8 baje aaunga", "bolo ki kal milte hain"
+            if (clean.contains("message") || clean.contains("bolo ki") || clean.contains("ki ")) {
+                val newMsg = clean.replace(Regex("^(message badal do|message change karo|bolo ki|ki)\\s*"), "").trim()
+                if (newMsg.isNotBlank()) {
+                    val targetContact = oldPlan.steps.firstOrNull { it.type == StepType.SEND_WHATSAPP }?.params?.get("contactName") ?: "contact"
+                    val reply = when (persona) {
+                        com.example.persona.PersonaType.GIRLFRIEND -> "Updated! $targetContact ko naya message bhej rahi hoon: '$newMsg' 💕"
+                        com.example.persona.PersonaType.PROFESSIONAL -> "Message parameter updated for $targetContact: '$newMsg', Sir."
+                        com.example.persona.PersonaType.BOLD -> "Message update kar diya: '$newMsg'."
+                    }
+                    val s1 = TaskStep("step_1", StepType.FIND_CONTACT, mapOf("name" to targetContact), "$targetContact ka contact dhoond rahe hain...")
+                    val s2 = TaskStep("step_2", StepType.SEND_WHATSAPP, mapOf("contactName" to targetContact, "message" to newMsg, "autoSend" to "true"), "Updated message bhej rahe hain...")
+                    return TaskPlan(query, "WHATSAPP_SEND", listOf(s1, s2), reply)
+                }
+            }
+        }
 
         // 1. WhatsApp Intent Recognition (Hindi / Hinglish / English)
         if (clean.contains("whatsapp") || clean.contains("व्हाट्सएप") || clean.contains("वाट्सएप")) {
@@ -414,6 +469,128 @@ If not found, return {"x": -1, "y": -1}.
             }
             val step = TaskStep("torch_toggle", StepType.TOGGLE_TORCH, mapOf("state" to state), "Toggling Flashlight to $state")
             return TaskPlan(query, "TOGGLE_TORCH", listOf(step), reply)
+        }
+
+        // 3b. Volume Controls (Heuristic fallback)
+        if (clean.contains("volume") || clean.contains("awaz") || clean.contains("aawaz")) {
+            val isMute = clean.contains("mute") || clean.contains("silent") || clean.contains("band")
+            val isDown = clean.contains("kam") || clean.contains("ghata") || clean.contains("down") || clean.contains("low")
+            val direction = if (isMute) "MUTE" else if (isDown) "DOWN" else "UP"
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> if (isMute) "Phone mute kar diya! 🤫❤️" else if (isDown) "Volume kam kar diya aapke liye! 🔉" else "Volume badha diya! 🔊💕"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Volume adjusted ($direction), Sir."
+                com.example.persona.PersonaType.BOLD -> "Volume $direction kar diya."
+            }
+            val step = TaskStep("vol_step", StepType.CONTROL_VOLUME, mapOf("direction" to direction), "Adjusting volume ($direction)")
+            return TaskPlan(query, "CONTROL_VOLUME", listOf(step), reply)
+        }
+
+        // 3c. Quick Settings Panels (WiFi, Bluetooth)
+        if (clean.contains("wifi") && (clean.contains("setting") || clean.contains("kholo") || clean.contains("open"))) {
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> "Wi-Fi settings open kar di! 📶✨"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Opening Wi-Fi configuration, Sir."
+                com.example.persona.PersonaType.BOLD -> "Wi-Fi settings khol di."
+            }
+            val step = TaskStep("wifi_step", StepType.OPEN_QUICK_SETTING, mapOf("panel" to "WIFI"), "Opening Wi-Fi settings")
+            return TaskPlan(query, "OPEN_WIFI", listOf(step), reply)
+        }
+
+        if (clean.contains("bluetooth") && (clean.contains("setting") || clean.contains("kholo") || clean.contains("open"))) {
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> "Bluetooth settings open kar di! ᛒ💕"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Opening Bluetooth configuration, Sir."
+                com.example.persona.PersonaType.BOLD -> "Bluetooth settings khol di."
+            }
+            val step = TaskStep("bt_step", StepType.OPEN_QUICK_SETTING, mapOf("panel" to "BLUETOOTH"), "Opening Bluetooth settings")
+            return TaskPlan(query, "OPEN_BLUETOOTH", listOf(step), reply)
+        }
+
+        // 3d. Media Playback Controls (Heuristic fallback)
+        if (clean.contains("gaana") || clean.contains("music") || clean.contains("song") || clean == "pause" || clean == "play") {
+            if (clean.contains("pause") || clean.contains("roko") || clean.contains("band")) {
+                val reply = when (persona) {
+                    com.example.persona.PersonaType.GIRLFRIEND -> "Gaana pause kar diya! ⏸️"
+                    com.example.persona.PersonaType.PROFESSIONAL -> "Media playback paused, Sir."
+                    com.example.persona.PersonaType.BOLD -> "Gaana rok diya."
+                }
+                val step = TaskStep("media_step", StepType.MEDIA_CONTROL, mapOf("action" to "PAUSE"), "Pausing music")
+                return TaskPlan(query, "MEDIA_CONTROL", listOf(step), reply)
+            } else if (clean.contains("next") || clean.contains("agla") || clean.contains("badlo") || clean.contains("skip")) {
+                val reply = when (persona) {
+                    com.example.persona.PersonaType.GIRLFRIEND -> "Agla gaana chala diya! ⏭️✨"
+                    com.example.persona.PersonaType.PROFESSIONAL -> "Skipping to next track, Sir."
+                    com.example.persona.PersonaType.BOLD -> "Agla track chalu kar diya."
+                }
+                val step = TaskStep("media_step", StepType.MEDIA_CONTROL, mapOf("action" to "NEXT"), "Skipping track")
+                return TaskPlan(query, "MEDIA_CONTROL", listOf(step), reply)
+            } else if (clean.contains("prev") || clean.contains("pichhla")) {
+                val reply = when (persona) {
+                    com.example.persona.PersonaType.GIRLFRIEND -> "Pichhla gaana chala diya! ⏮️"
+                    com.example.persona.PersonaType.PROFESSIONAL -> "Returning to previous track, Sir."
+                    com.example.persona.PersonaType.BOLD -> "Pichhla gaana laga diya."
+                }
+                val step = TaskStep("media_step", StepType.MEDIA_CONTROL, mapOf("action" to "PREVIOUS"), "Previous track")
+                return TaskPlan(query, "MEDIA_CONTROL", listOf(step), reply)
+            } else if (clean.contains("play") || clean.contains("chalao") || clean.contains("bajao") || clean.contains("resume")) {
+                val reply = when (persona) {
+                    com.example.persona.PersonaType.GIRLFRIEND -> "Gaana play kar diya! 🎶💕"
+                    com.example.persona.PersonaType.PROFESSIONAL -> "Resuming media playback, Sir."
+                    com.example.persona.PersonaType.BOLD -> "Gaana chala diya."
+                }
+                val step = TaskStep("media_step", StepType.MEDIA_CONTROL, mapOf("action" to "PLAY"), "Playing music")
+                return TaskPlan(query, "MEDIA_CONTROL", listOf(step), reply)
+            }
+        }
+
+        // 3e. Battery Status (Heuristic fallback)
+        if (clean.contains("battery") || clean.contains("charge")) {
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> "Phone ki battery status check kar rahi hoon baby! 💕"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Querying device battery telemetry, Sir."
+                com.example.persona.PersonaType.BOLD -> "Battery check ki ja rahi hai."
+            }
+            val step = TaskStep("batt_step", StepType.CHECK_BATTERY, emptyMap(), "Checking battery level")
+            return TaskPlan(query, "CHECK_BATTERY", listOf(step), reply)
+        }
+
+        // 3f. Navigation & Maps (Heuristic fallback)
+        if (clean.contains("rasta") || clean.contains("navigate") || clean.contains("direction")) {
+            val dest = clean
+                .replace(Regex("^(navigate to|direction to|directions to|take me to|rasta dikhao|rasta batao)\\s*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s*(ka rasta dikhao|ka rasta batao|ka rasta)$", RegexOption.IGNORE_CASE), "")
+                .trim()
+            val target = if (dest.isNotBlank()) dest else "Destination"
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> "$target ka rasta Maps pe chalu kar diya! Dhyan se jana 💕🗺️"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Opening navigation routes to $target, Sir."
+                com.example.persona.PersonaType.BOLD -> "$target ka rasta Maps pe khol diya."
+            }
+            val step = TaskStep("nav_step", StepType.NAVIGATE_TO, mapOf("destination" to target), "Navigating to $target")
+            return TaskPlan(query, "NAVIGATE_TO", listOf(step), reply)
+        }
+
+        // 3g. Camera & Selfie (Heuristic fallback)
+        if (clean.contains("selfie") || clean.contains("camera") || clean.contains("photo") || clean.contains("video")) {
+            val mode = if (clean.contains("selfie") || clean.contains("front")) "SELFIE" else if (clean.contains("video")) "VIDEO" else "PHOTO"
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> if (mode == "SELFIE") "Selfie camera khol diya! Smile please! 📸💕" else "Camera open kar diya! ✨"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Launching camera in $mode mode, Sir."
+                com.example.persona.PersonaType.BOLD -> "Camera mode ($mode) chalu."
+            }
+            val step = TaskStep("cam_step", StepType.OPEN_CAMERA, mapOf("mode" to mode), "Opening camera ($mode)")
+            return TaskPlan(query, "OPEN_CAMERA", listOf(step), reply)
+        }
+
+        // 3h. Screenshot (Heuristic fallback)
+        if (clean.contains("screenshot")) {
+            val reply = when (persona) {
+                com.example.persona.PersonaType.GIRLFRIEND -> "Screenshot le liya! 📸✨"
+                com.example.persona.PersonaType.PROFESSIONAL -> "Screenshot captured, Sir."
+                com.example.persona.PersonaType.BOLD -> "Screenshot capture ho gaya."
+            }
+            val step = TaskStep("screen_step", StepType.ACCESSIBILITY_GLOBAL, mapOf("action" to "SCREENSHOT"), "Capturing screenshot")
+            return TaskPlan(query, "SCREENSHOT", listOf(step), reply)
         }
 
         // 4. Calling Intent

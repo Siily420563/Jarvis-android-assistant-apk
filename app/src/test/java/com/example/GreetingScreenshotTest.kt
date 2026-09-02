@@ -2,6 +2,8 @@ package com.example
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import com.example.alarm.AlarmScreenContent
+import com.example.persona.PersonaType
 import com.example.ui.theme.MyApplicationTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -20,9 +22,19 @@ class GreetingScreenshotTest {
   @get:Rule val composeTestRule = createComposeRule()
 
   @Test
-  fun greeting_screenshot() {
-    composeTestRule.setContent { MyApplicationTheme { Greeting("Robolectric") } }
+  fun alarm_screen_screenshot() {
+    composeTestRule.setContent {
+      MyApplicationTheme {
+        AlarmScreenContent(
+          label = "Wake Up",
+          timeStr = "07:00",
+          persona = PersonaType.GIRLFRIEND,
+          onDismissAndBriefing = {},
+          onSnooze = {}
+        )
+      }
+    }
 
-    composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
+    composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/alarm_screen.png")
   }
 }

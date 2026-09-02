@@ -100,6 +100,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.checkSystemPermissionsStatus()
     }
+
+    override fun onPause() {
+        super.onPause()
+        viewModel.onActivityPaused()
+    }
 }
 
 enum class SaraTab {

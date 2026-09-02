@@ -24,6 +24,7 @@ import com.example.data.db.UserMemory
 import com.example.data.prefs.PreferencesManager
 import com.example.engine.FastPathClassifier
 import com.example.engine.FastPathResult
+import com.example.engine.InterruptedTaskState
 import com.example.engine.LlmEngine
 import com.example.engine.TaskExecutor
 import com.example.engine.TaskPlan
@@ -91,6 +92,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Confirmation for risky actions (Payments / Deletions)
     private val _pendingRiskyPlan = MutableStateFlow<TaskPlan?>(null)
     val pendingRiskyPlan: StateFlow<TaskPlan?> = _pendingRiskyPlan.asStateFlow()
+
+    // Interrupted task state for multi-turn resumption and context merging
+    private val _interruptedTask = MutableStateFlow<InterruptedTaskState?>(null)
+    val interruptedTask: StateFlow<InterruptedTaskState?> = _interruptedTask.asStateFlow()
 
     init {
         checkSystemPermissionsStatus()
@@ -282,8 +287,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isListening.value = false
     }
 
+    fun onActivityPaused() {
+        if (!isContinuousListeningMode) {
+            stopListening()
+        }
+    }
+
     private fun speakAndPromptNext(text: String, onSpeechFinished: (() -> Unit)? = null) {
-        tts.speak(text, apiKey = prefs.geminiApiKey) {
+        tts.speak(text, apiKey = prefs.geminiApiKey, groqApiKey = prefs.groqApiKey) {
             onSpeechFinished?.invoke()
             if (isContinuousListeningMode) {
                 viewModelScope.launch {
@@ -308,8 +319,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
 
             // 1. Check FastPath Classifier for instant response
-            val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName)
+            val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName, context = getApplication())
             if (fastPath is FastPathResult.Handled) {
+                if (fastPath.plan.intentKey == "STOP_COMMAND") {
+                    stopSaraNow()
+                    return@launch
+                }
                 if (fastPath.switchPersona != null) {
                     setPersona(fastPath.switchPersona)
                 }
@@ -318,6 +333,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 db.jarvisDao().insertLog(InteractionLog(text = fastPath.immediateReplyHinglish, isUser = false))
 
                 if (fastPath.plan.steps.isNotEmpty()) {
+                    _interruptedTask.value = null
                     _currentTaskPlan.value = fastPath.plan
                     executor.executePlan(
                         plan = fastPath.plan,
@@ -334,6 +350,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (cachedMacro != null) {
                 val cachedPlan = TaskPlan.fromJsonString(cachedMacro.taskGraphJson)
                 if (cachedPlan != null) {
+                    _interruptedTask.value = null
                     val response = cachedPlan.speechResponseHinglish.ifBlank { "Task execute kar rahe hain..." }
                     _saraResponse.value = response
                     _currentTaskPlan.value = cachedPlan
@@ -356,10 +373,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val alarmsStr = alarmsList.joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
             val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
 
-            val planResult = llmEngine.planAndQuery(query, memoriesStr, alarmsStr, screenContext)
+            // Multi-turn context: fetch recent conversation history
+            val recentLogs = db.jarvisDao().getRecentLogs(10).reversed()
+            val recentHistoryStr = recentLogs.joinToString("\n") { log ->
+                if (log.isUser) "User: ${log.text}" else "SARA: ${log.text}"
+            }
+
+            val planResult = llmEngine.planAndQuery(
+                userInput = query,
+                userMemoriesStr = memoriesStr,
+                activeAlarmsStr = alarmsStr,
+                screenContextStr = screenContext,
+                conversationHistoryStr = recentHistoryStr,
+                interruptedTaskState = _interruptedTask.value
+            )
             _isProcessing.value = false
 
             planResult.onSuccess { plan ->
+                // Clear interrupted task now that a follow-up or new plan has been formulated
+                _interruptedTask.value = null
                 _currentTaskPlan.value = plan
                 // NEW: if this reply came from the crude local fallback (real AI call failed or
                 // no key configured), say so on screen instead of silently looking like a normal
@@ -402,7 +434,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 executor.proceedExecution(
                     plan = plan,
                     onStepUpdated = { _currentTaskPlan.value = it },
-                    onSpeak = { tts.speak(it) }
+                    onSpeak = { speakAndPromptNext(it) }
                 )
             }
         } else {
@@ -412,16 +444,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 PersonaType.BOLD -> "Cancel kar diya. Safe side!"
             }
             _saraResponse.value = cancelReply
-            tts.speak(cancelReply)
+            speakAndPromptNext(cancelReply)
         }
     }
 
     /**
-     * NEW: Stop button. Cancels whatever SARA is currently doing (speaking, or mid-task)
-     * and returns to idle. Note: this is a straightforward stop, not the fuller "merge old
-     * context with a new instruction" behavior discussed for later — that's a bigger follow-up.
+     * Stop button. Interrupts whatever SARA is currently doing (speaking, or mid-task).
+     * Saves the interrupted task state for seamless resumption or follow-up modification.
      */
     fun stopSaraNow() {
+        val interrupted = executor.interruptCurrentExecution()
+        if (interrupted != null) {
+            _interruptedTask.value = interrupted
+        }
         currentCommandJob?.cancel()
         tts.stop()
         speechRecognizer?.stopListening()
@@ -431,11 +466,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pendingRiskyPlan.value = null
 
         val stopReply = when (prefs.activePersona) {
-            PersonaType.GIRLFRIEND -> "Theek hai, ruk gayi main! Bolo ab kya karna hai 💕"
-            PersonaType.PROFESSIONAL -> "Stopped, Sir. Awaiting your next instruction."
-            PersonaType.BOLD -> "Ruk gayi. Bolo agla kaam kya hai!"
+            PersonaType.GIRLFRIEND -> if (interrupted != null) "Task pause kar diya! Bolo aage continue karun ya kuch aur? 💕" else "Theek hai, ruk gayi main! Bolo ab kya karna hai 💕"
+            PersonaType.PROFESSIONAL -> if (interrupted != null) "Task execution paused, Sir. Say continue or modify parameters." else "Stopped, Sir. Awaiting your next instruction."
+            PersonaType.BOLD -> if (interrupted != null) "Task rok diya. Aage badhana hai toh bolo!" else "Ruk gayi. Bolo agla kaam kya hai!"
         }
         _saraResponse.value = stopReply
+    }
+
+    /** Resumes the remaining steps of the paused/interrupted task */
+    fun resumeInterruptedTask() {
+        val interrupted = _interruptedTask.value ?: return
+        _interruptedTask.value = null
+        val remaining = interrupted.remainingSteps()
+        if (remaining.isEmpty()) {
+            val doneMsg = "Yeh task pehle hi complete ho gaya tha!"
+            _saraResponse.value = doneMsg
+            speakAndPromptNext(doneMsg)
+            return
+        }
+
+        val resumePlan = TaskPlan(
+            originalQuery = interrupted.plan.originalQuery,
+            intentKey = "RESUME_" + interrupted.plan.intentKey,
+            steps = remaining,
+            speechResponseHinglish = when (prefs.activePersona) {
+                PersonaType.GIRLFRIEND -> "Task resume kar rahi hoon! Aage badh rahe hain 💕"
+                PersonaType.PROFESSIONAL -> "Resuming pending execution pipeline, Sir."
+                PersonaType.BOLD -> "Chalo aage badhte hain!"
+            }
+        )
+        _currentTaskPlan.value = resumePlan
+        _saraResponse.value = resumePlan.speechResponseHinglish
+        speakAndPromptNext(resumePlan.speechResponseHinglish)
+        viewModelScope.launch {
+            executor.executePlan(
+                plan = resumePlan,
+                onStepUpdated = { _currentTaskPlan.value = it },
+                onSpeak = { speakAndPromptNext(it) }
+            )
+        }
+    }
+
+    /** Dismisses the interrupted task without resuming */
+    fun dismissInterruptedTask() {
+        _interruptedTask.value = null
+        executor.resetActivePlan()
     }
 
     /** NEW: Clears the visible chat/interaction log only — learned memory is untouched. */
@@ -475,7 +550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val reply = "Settings update ho gayi hain! SARA is configured with the latest smart models."
         _saraResponse.value = reply
-        tts.speak(reply)
+        speakAndPromptNext(reply)
     }
 
     fun toggleFloatingBubble(context: Context) {

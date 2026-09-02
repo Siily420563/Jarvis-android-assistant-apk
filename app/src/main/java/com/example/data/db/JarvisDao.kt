@@ -9,6 +9,9 @@ interface JarvisDao {
     @Query("SELECT * FROM interaction_logs ORDER BY timestamp DESC LIMIT 100")
     fun getAllInteractionLogs(): Flow<List<InteractionLog>>
 
+    @Query("SELECT * FROM interaction_logs ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getRecentLogs(limit: Int): List<InteractionLog>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLog(log: InteractionLog): Long
 

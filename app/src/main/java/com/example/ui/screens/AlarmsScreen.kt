@@ -10,7 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -108,7 +108,7 @@ fun AlarmsScreen(viewModel: MainViewModel) {
                         colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp), tint = CyberBg)
+                        Icon(imageVector = Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp), tint = CyberBg)
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("TEST BRIEFING", fontSize = 10.sp, color = CyberBg, fontWeight = FontWeight.Bold)
                     }

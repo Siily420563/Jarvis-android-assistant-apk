@@ -293,12 +293,11 @@ fun BrainScreen(viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val geminiModels = listOf(
-                        "gemini-3.7-flash" to "Gemini 3.7 Flash (Default)",
-                        "gemini-3.6-flash" to "Gemini 3.6 Flash",
-                        "gemini-3.5-flash" to "Gemini 3.5 Flash",
+                        "gemini-3.5-flash" to "Gemini 3.5 Flash (Default)",
                         "gemini-3.5-flash-lite" to "Gemini 3.5 Flash Lite",
+                        "gemini-3.1-flash-lite" to "Gemini 3.1 Flash Lite",
                         "gemini-3.1-pro-preview" to "Gemini 3.1 Pro Preview",
-                        "gemini-3.1-flash-lite" to "Gemini 3.1 Flash Lite"
+                        "gemini-3.7-flash" to "Gemini 3.7 Flash"
                     )
                     geminiModels.forEach { (id, label) ->
                         FilterChip(
@@ -552,7 +551,7 @@ fun BrainScreen(viewModel: MainViewModel) {
                     }
                 }
 
-                Divider(color = CyberCardBorder)
+                HorizontalDivider(color = CyberCardBorder)
 
                 // Accessibility Service
                 Row(
@@ -594,7 +593,7 @@ fun BrainScreen(viewModel: MainViewModel) {
                     }
                 }
 
-                Divider(color = CyberCardBorder)
+                HorizontalDivider(color = CyberCardBorder)
 
                 // Floating Overlay Bubble
                 Row(

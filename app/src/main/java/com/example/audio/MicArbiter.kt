@@ -19,24 +19,50 @@ object MicArbiter {
 
     @Volatile
     private var owner: String? = null
+    @Volatile
+    private var acquireTime: Long = 0L
 
     /** Call before starting a SpeechRecognizer session. Returns false if the other side already owns the mic. */
     @Synchronized
     fun acquire(requester: String): Boolean {
+        val now = System.currentTimeMillis()
+        // If the previous owner has held the mic for > 15 seconds without releasing, break stale lock
         if (owner != null && owner != requester) {
-            Log.w("MicArbiter", "$requester wants the mic but '$owner' already holds it - backing off instead of double-starting")
-            return false
+            if (now - acquireTime > 15000L) {
+                Log.w("MicArbiter", "Breaking stale mic lock held by '$owner' (>15s) for new requester '$requester'")
+                owner = null
+            } else {
+                Log.w("MicArbiter", "$requester wants the mic but '$owner' already holds it - backing off instead of double-starting")
+                return false
+            }
         }
         owner = requester
+        acquireTime = now
         return true
     }
 
     /** Call on every result, error, and manual stop - not just the "happy path". */
     @Synchronized
     fun release(requester: String) {
-        if (owner == requester) owner = null
+        if (owner == requester) {
+            owner = null
+            acquireTime = 0L
+        }
     }
 
     @Synchronized
-    fun isHeldByOther(requester: String): Boolean = owner != null && owner != requester
+    fun forceRelease() {
+        owner = null
+        acquireTime = 0L
+    }
+
+    @Synchronized
+    fun isHeldByOther(requester: String): Boolean {
+        val now = System.currentTimeMillis()
+        if (owner != null && owner != requester && now - acquireTime > 15000L) {
+            owner = null
+            acquireTime = 0L
+        }
+        return owner != null && owner != requester
+    }
 }

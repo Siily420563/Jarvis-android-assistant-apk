@@ -9,7 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.db.InteractionLog
+import com.example.engine.InterruptedTaskState
 import com.example.persona.PersonaType
 import com.example.ui.MainViewModel
 import com.example.ui.components.*
@@ -52,6 +53,7 @@ fun HomeScreen(
     val activePersona by viewModel.activePersona.collectAsState()
     val currentTaskPlan by viewModel.currentTaskPlan.collectAsState()
     val pendingRiskyPlan by viewModel.pendingRiskyPlan.collectAsState()
+    val interruptedTask by viewModel.interruptedTask.collectAsState()
     val interactionLogs by viewModel.interactionLogs.collectAsState(initial = emptyList())
 
     var typedCommand by remember { mutableStateOf("") }
@@ -159,7 +161,7 @@ fun HomeScreen(
             }
         }
 
-        // NEW: Stop button - cancels whatever SARA is currently doing
+        // Stop button - interrupts and pauses whatever SARA is currently doing
         item {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
@@ -179,6 +181,85 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
+                }
+            }
+        }
+
+        // Interrupted Task Card (Phase 1 Multi-turn Context & Resumption)
+        val taskState = interruptedTask
+        if (taskState != null) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("interrupted_task_card"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1B4B)),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF818CF8))
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("⏸", fontSize = 14.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "TASK PAUSED / INTERRUPTED",
+                                    color = Color(0xFF818CF8),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.sp
+                                )
+                            }
+                            Text(
+                                text = "Step ${taskState.stoppedStepIndex + 1}/${taskState.plan.steps.size}",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = taskState.plan.originalQuery,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Text(
+                            text = "Bolo 'continue' to resume, or give a new instruction (e.g. 'nahi papa ko') to merge context.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = { viewModel.dismissInterruptedTask() },
+                                modifier = Modifier.testTag("dismiss_task_btn")
+                            ) {
+                                Text("DISMISS", color = TextSecondary, fontSize = 11.sp)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = { viewModel.resumeInterruptedTask() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("resume_task_btn")
+                            ) {
+                                Text("RESUME TASK", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -298,7 +379,7 @@ fun HomeScreen(
                         .testTag("sara_send_command_btn")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Send,
+                        imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send Command",
                         tint = CyberBg,
                         modifier = Modifier.size(20.dp)

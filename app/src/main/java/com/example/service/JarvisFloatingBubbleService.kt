@@ -419,8 +419,14 @@ class JarvisFloatingBubbleService : Service() {
             try {
                 db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
 
-                val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName)
+                val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName, context = this@JarvisFloatingBubbleService)
                 if (fastPath is FastPathResult.Handled) {
+                    if (fastPath.plan.intentKey == "STOP_COMMAND") {
+                        tts.stop()
+                        executor.interruptCurrentExecution()
+                        speakAndResumeSession(fastPath.immediateReplyHinglish)
+                        return@launch
+                    }
                     if (fastPath.switchPersona != null) {
                         prefs.activePersona = fastPath.switchPersona
                         orbView?.persona = fastPath.switchPersona
@@ -443,7 +449,10 @@ class JarvisFloatingBubbleService : Service() {
                 val alarms = db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
                 val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
 
-                val result = llmEngine.planAndQuery(query, memories, alarms, screenContext)
+                val recentLogs = db.jarvisDao().getRecentLogs(8).reversed()
+                val historyStr = recentLogs.joinToString("\n") { if (it.isUser) "User: ${it.text}" else "SARA: ${it.text}" }
+
+                val result = llmEngine.planAndQuery(query, memories, alarms, screenContext, historyStr, null)
                 orbView?.isProcessing = false
 
                 result.onSuccess { plan ->

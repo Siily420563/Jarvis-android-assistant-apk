@@ -104,7 +104,7 @@ class JarvisAlarmActivity : ComponentActivity() {
                 PersonaType.BOLD -> "Good morning! $todayDate ho chuka hai. Uth jao fatfat, aur snooze mat dabana!"
             }
 
-            tts.speak(briefingText) {
+            tts.speak(briefingText, apiKey = prefs.geminiApiKey, groqApiKey = prefs.groqApiKey) {
                 finish()
             }
         }
@@ -116,6 +116,11 @@ class JarvisAlarmActivity : ComponentActivity() {
         val newHour = if (minute + 5 >= 60) (hour + 1) % 24 else hour
         JarvisAlarmScheduler.scheduleAlarm(this, newHour, newMin, "$label (Snoozed)")
         finish()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        ringtone?.stop()
     }
 
     override fun onDestroy() {

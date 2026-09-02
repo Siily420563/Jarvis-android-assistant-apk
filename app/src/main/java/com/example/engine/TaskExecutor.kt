@@ -23,6 +23,7 @@ sealed class ExecutionState {
     data class Completed(val plan: TaskPlan, val messageHinglish: String) : ExecutionState()
     data class Failed(val plan: TaskPlan, val failedStep: TaskStep, val errorHinglish: String) : ExecutionState()
     data class AwaitingConfirmation(val plan: TaskPlan, val promptHinglish: String) : ExecutionState()
+    data class Interrupted(val state: InterruptedTaskState, val messageHinglish: String) : ExecutionState()
 }
 
 class TaskExecutor(
@@ -34,8 +35,32 @@ class TaskExecutor(
     private val _executionState = MutableStateFlow<ExecutionState>(ExecutionState.Idle)
     val executionState: StateFlow<ExecutionState> = _executionState.asStateFlow()
 
+    @Volatile
+    var currentlyExecutingPlan: TaskPlan? = null
+        private set
+
+    @Volatile
+    var currentStepIndex: Int = 0
+        private set
+
     // Shared context between steps in a single plan (e.g. found phone number)
     private val stepContext = mutableMapOf<String, String>()
+
+    fun resetActivePlan() {
+        currentlyExecutingPlan = null
+        currentStepIndex = 0
+        _executionState.value = ExecutionState.Idle
+    }
+
+    fun interruptCurrentExecution(): InterruptedTaskState? {
+        val plan = currentlyExecutingPlan ?: return null
+        val idx = currentStepIndex
+        val state = InterruptedTaskState(plan, idx)
+        _executionState.value = ExecutionState.Interrupted(state, "Task '${plan.originalQuery}' ruk gaya.")
+        currentlyExecutingPlan = null
+        currentStepIndex = 0
+        return state
+    }
 
     suspend fun executePlan(
         plan: TaskPlan,
@@ -71,67 +96,74 @@ class TaskExecutor(
             onSpeak(plan.speechResponseHinglish)
         }
 
-        for (index in plan.steps.indices) {
-            val step = plan.steps[index]
-            step.status = StepStatus.RUNNING
-            _executionState.value = ExecutionState.Running(plan, index)
-            onStepUpdated(plan)
-
-            delay(350) // Natural pacing between automation steps
-
-            var success = executeSingleStep(step)
-            if (!success) {
-                // Retry once
-                step.status = StepStatus.RETRYING
-                step.retryCount = 1
-                onStepUpdated(plan)
-                delay(600)
-                success = executeSingleStep(step)
-            }
-
-            if (success) {
-                step.status = StepStatus.SUCCESS
-                onStepUpdated(plan)
-            } else {
-                step.status = StepStatus.FAILED
-                step.errorMessage = "Failed after retry"
+        currentlyExecutingPlan = plan
+        try {
+            for (index in plan.steps.indices) {
+                currentStepIndex = index
+                val step = plan.steps[index]
+                step.status = StepStatus.RUNNING
+                _executionState.value = ExecutionState.Running(plan, index)
                 onStepUpdated(plan)
 
-                val errorHinglish = "Sorry, '${step.descriptionHinglish}' execute nahi ho paya. Kya main dobara try karun?"
-                _executionState.value = ExecutionState.Failed(plan, step, errorHinglish)
-                onSpeak(errorHinglish)
-                return
-            }
-        }
+                delay(350) // Natural pacing between automation steps
 
-        // All steps succeeded -> Cache in Macro DB if multi-step!
-        if (plan.steps.size >= 2 && plan.intentKey.isNotBlank()) {
-            try {
-                val existing = db.jarvisDao().findMacroByIntent(plan.intentKey)
-                if (existing != null) {
-                    db.jarvisDao().insertMacro(
-                        existing.copy(
-                            executionCount = existing.executionCount + 1,
-                            lastExecuted = System.currentTimeMillis()
-                        )
-                    )
-                } else {
-                    db.jarvisDao().insertMacro(
-                        MacroCache(
-                            intentKey = plan.intentKey,
-                            taskDescription = plan.originalQuery,
-                            taskGraphJson = plan.toJsonString(),
-                            executionCount = 1
-                        )
-                    )
+                var success = executeSingleStep(step)
+                if (!success) {
+                    // Retry once
+                    step.status = StepStatus.RETRYING
+                    step.retryCount = 1
+                    onStepUpdated(plan)
+                    delay(600)
+                    success = executeSingleStep(step)
                 }
-            } catch (e: Exception) {
-                Log.e("TaskExecutor", "Error caching macro", e)
-            }
-        }
 
-        val successMsg = plan.speechResponseHinglish.ifBlank { "Kaam ho gaya! Sab steps successfully complete ho gaye. ✨" }
-        _executionState.value = ExecutionState.Completed(plan, successMsg)
+                if (success) {
+                    step.status = StepStatus.SUCCESS
+                    onStepUpdated(plan)
+                } else {
+                    step.status = StepStatus.FAILED
+                    step.errorMessage = "Failed after retry"
+                    onStepUpdated(plan)
+
+                    val errorHinglish = "Sorry, '${step.descriptionHinglish}' execute nahi ho paya. Kya main dobara try karun?"
+                    _executionState.value = ExecutionState.Failed(plan, step, errorHinglish)
+                    onSpeak(errorHinglish)
+                    return
+                }
+            }
+
+            // All steps succeeded -> Cache in Macro DB if multi-step!
+            if (plan.steps.size >= 2 && plan.intentKey.isNotBlank()) {
+                try {
+                    val existing = db.jarvisDao().findMacroByIntent(plan.intentKey)
+                    if (existing != null) {
+                        db.jarvisDao().insertMacro(
+                            existing.copy(
+                                executionCount = existing.executionCount + 1,
+                                lastExecuted = System.currentTimeMillis()
+                            )
+                        )
+                    } else {
+                        db.jarvisDao().insertMacro(
+                            MacroCache(
+                                intentKey = plan.intentKey,
+                                taskDescription = plan.originalQuery,
+                                taskGraphJson = plan.toJsonString(),
+                                executionCount = 1
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.e("TaskExecutor", "Error caching macro", e)
+                }
+            }
+
+            val successMsg = plan.speechResponseHinglish.ifBlank { "Kaam ho gaya! Sab steps successfully complete ho gaye. ✨" }
+            _executionState.value = ExecutionState.Completed(plan, successMsg)
+        } finally {
+            currentlyExecutingPlan = null
+            currentStepIndex = 0
+        }
     }
 
     private suspend fun executeSingleStep(step: TaskStep): Boolean {
@@ -271,6 +303,47 @@ class TaskExecutor(
                     val state = step.params["state"]?.uppercase() ?: "ON"
                     val enable = state != "OFF" && state != "FALSE"
                     DeviceActionHelper.setTorchMode(context, enable)
+                }
+
+                StepType.CONTROL_VOLUME -> {
+                    val direction = step.params["direction"] ?: "UP"
+                    val percentStr = step.params["percent"]
+                    val streamType = step.params["stream"] ?: "MEDIA"
+                    if (!percentStr.isNullOrBlank()) {
+                        val percent = percentStr.toIntOrNull() ?: 50
+                        DeviceActionHelper.setVolumePercent(context, percent, streamType)
+                    } else {
+                        DeviceActionHelper.adjustVolume(context, direction, streamType)
+                    }
+                }
+
+                StepType.OPEN_QUICK_SETTING -> {
+                    val panel = step.params["panel"] ?: step.params["type"] ?: "SETTINGS"
+                    DeviceActionHelper.openQuickSettingPanel(context, panel)
+                }
+
+                StepType.MEDIA_CONTROL -> {
+                    val action = step.params["action"] ?: "PLAY_PAUSE"
+                    DeviceActionHelper.controlMediaPlayback(context, action)
+                }
+
+                StepType.NAVIGATE_TO -> {
+                    val dest = step.params["destination"] ?: step.params["query"] ?: ""
+                    if (dest.isNotBlank()) {
+                        DeviceActionHelper.navigateToDestination(context, dest)
+                    } else true
+                }
+
+                StepType.CHECK_BATTERY -> {
+                    val status = DeviceActionHelper.getBatteryStatus(context)
+                    stepContext["battery_pct"] = status.percentage.toString()
+                    stepContext["battery_charging"] = status.isCharging.toString()
+                    true
+                }
+
+                StepType.OPEN_CAMERA -> {
+                    val mode = step.params["mode"] ?: "PHOTO"
+                    DeviceActionHelper.launchCameraMode(context, mode)
                 }
 
                 StepType.SEARCH_WEB -> {
