@@ -153,6 +153,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     override fun onError(error: Int) {
                         _isListening.value = false
+                        com.example.audio.MicArbiter.release("app")
                         Log.e("MainViewModel", "Speech recognition error code: $error")
                         val isGf = prefs.activePersona == PersonaType.GIRLFRIEND
                         val hint = when (error) {
@@ -177,6 +178,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     override fun onResults(results: Bundle?) {
                         _isListening.value = false
+                        com.example.audio.MicArbiter.release("app")
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         if (!matches.isNullOrEmpty()) {
                             val query = matches[0]
@@ -220,11 +222,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startListeningInternal() {
+        if (!com.example.audio.MicArbiter.acquire("app")) {
+            // The background orb already owns the mic right now - don't start a
+            // competing session (that's what caused the on/off loop before).
+            _saraResponse.value = "Ek second, main background mein already sun rahi hoon... orb wale session ko pehle rokiye."
+            return
+        }
         val recognizer = getOrCreateSpeechRecognizer()
         if (recognizer != null) {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                // en-IN as the PRIMARY language gives back Romanized ("Hinglish") text
+                // even for Hindi speech, instead of Devanagari script.
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
             }
@@ -232,8 +242,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 recognizer.startListening(intent)
                 _isListening.value = true
             } catch (e: Exception) {
+                com.example.audio.MicArbiter.release("app")
                 _isListening.value = false
             }
+        } else {
+            com.example.audio.MicArbiter.release("app")
         }
     }
 
@@ -265,6 +278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopListening() {
         speechRecognizer?.stopListening()
+        com.example.audio.MicArbiter.release("app")
         _isListening.value = false
     }
 
@@ -411,6 +425,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentCommandJob?.cancel()
         tts.stop()
         speechRecognizer?.stopListening()
+        com.example.audio.MicArbiter.release("app")
         _isProcessing.value = false
         _isListening.value = false
         _pendingRiskyPlan.value = null

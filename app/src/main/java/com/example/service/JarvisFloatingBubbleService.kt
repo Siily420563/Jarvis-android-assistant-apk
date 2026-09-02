@@ -273,6 +273,7 @@ class JarvisFloatingBubbleService : Service() {
                         override fun onError(error: Int) {
                             isCurrentlyListening = false
                             orbView?.isListening = false
+                            com.example.audio.MicArbiter.release("orb")
                             Log.w("SaraFloating", "Speech error code: $error")
                             if (isSessionActive && !isAsleep) {
                                 resetAutoSleepTimer()
@@ -287,6 +288,7 @@ class JarvisFloatingBubbleService : Service() {
                         override fun onResults(results: Bundle?) {
                             isCurrentlyListening = false
                             orbView?.isListening = false
+                            com.example.audio.MicArbiter.release("orb")
                             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             if (!matches.isNullOrEmpty()) {
                                 val query = matches[0]
@@ -366,17 +368,36 @@ class JarvisFloatingBubbleService : Service() {
             initSpeechRecognizer()
         }
 
-        val recognizer = speechRecognizer ?: return
+        if (!com.example.audio.MicArbiter.acquire("orb")) {
+            // The in-app mic already owns the session right now - back off and
+            // try again shortly instead of starting a competing recognizer
+            // (this backing-off, instead of blind-retrying, is what actually
+            // breaks the on/off loop).
+            mainHandler.postDelayed({
+                if (isSessionActive && !isAsleep && !isCurrentlyListening) {
+                    startListeningLoop()
+                }
+            }, 1500)
+            return
+        }
+
+        val recognizer = speechRecognizer ?: run {
+            com.example.audio.MicArbiter.release("orb")
+            return
+        }
         try {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                // en-IN as the PRIMARY language gives back Romanized ("Hinglish") text
+                // even for Hindi speech, instead of Devanagari script.
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
             }
             recognizer.startListening(intent)
             orbView?.isListening = true
         } catch (e: Exception) {
+            com.example.audio.MicArbiter.release("orb")
             Log.e("SaraFloating", "Error starting listening", e)
         }
     }
@@ -385,6 +406,7 @@ class JarvisFloatingBubbleService : Service() {
         try {
             speechRecognizer?.stopListening()
         } catch (e: Exception) {}
+        com.example.audio.MicArbiter.release("orb")
         isCurrentlyListening = false
         orbView?.isListening = false
     }
