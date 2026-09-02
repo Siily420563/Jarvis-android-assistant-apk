@@ -316,11 +316,14 @@ class JarvisFloatingBubbleService : Service() {
 
     private fun onOrbTapped() {
         if (isAsleep) {
-            // Wake up from sleep
+            // Currently asleep -> wake up and resume listening
             wakeUpAndStartListening()
         } else {
-            // Already awake: restart listening or toggle
-            wakeUpAndStartListening()
+            // Currently awake -> tapping again means "stop for now", not restart.
+            // (Previously both branches called wakeUpAndStartListening(), which is why
+            // tapping the orb never actually turned it off.)
+            tts.stop()
+            enterSleepState()
         }
     }
 
@@ -422,7 +425,10 @@ class JarvisFloatingBubbleService : Service() {
                 orbView?.isProcessing = false
 
                 result.onSuccess { plan ->
-                    db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
+                    val displayText = if (plan.usedFallback) {
+                        "⚠️ [Fallback mode: ${plan.fallbackReason}]\n${plan.speechResponseHinglish}"
+                    } else plan.speechResponseHinglish
+                    db.jarvisDao().insertLog(InteractionLog(text = displayText, isUser = false))
 
                     speakAndResumeSession(plan.speechResponseHinglish) {
                         if (plan.steps.isNotEmpty()) {
@@ -478,4 +484,3 @@ class JarvisFloatingBubbleService : Service() {
         tts.shutdown()
     }
 }
-

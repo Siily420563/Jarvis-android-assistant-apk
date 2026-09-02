@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -281,12 +282,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var currentCommandJob: Job? = null
+
     fun executeUserCommand(query: String) {
         if (query.isBlank()) return
         _recognizedText.value = query
         _pendingRiskyPlan.value = null
 
-        viewModelScope.launch {
+        currentCommandJob = viewModelScope.launch {
             // Save User Interaction
             db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
 
@@ -344,9 +347,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             planResult.onSuccess { plan ->
                 _currentTaskPlan.value = plan
-                _saraResponse.value = plan.speechResponseHinglish
+                // NEW: if this reply came from the crude local fallback (real AI call failed or
+                // no key configured), say so on screen instead of silently looking like a normal
+                // reply. Speech stays natural — only the visible text gets the warning prefix.
+                val displayText = if (plan.usedFallback) {
+                    "⚠️ [Fallback mode: ${plan.fallbackReason}]\n${plan.speechResponseHinglish}"
+                } else {
+                    plan.speechResponseHinglish
+                }
+                _saraResponse.value = displayText
 
-                db.jarvisDao().insertLog(InteractionLog(text = plan.speechResponseHinglish, isUser = false))
+                db.jarvisDao().insertLog(InteractionLog(text = displayText, isUser = false))
 
                 if (plan.requiresRiskyConfirmation) {
                     _pendingRiskyPlan.value = plan
@@ -388,6 +399,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _saraResponse.value = cancelReply
             tts.speak(cancelReply)
+        }
+    }
+
+    /**
+     * NEW: Stop button. Cancels whatever SARA is currently doing (speaking, or mid-task)
+     * and returns to idle. Note: this is a straightforward stop, not the fuller "merge old
+     * context with a new instruction" behavior discussed for later — that's a bigger follow-up.
+     */
+    fun stopSaraNow() {
+        currentCommandJob?.cancel()
+        tts.stop()
+        speechRecognizer?.stopListening()
+        _isProcessing.value = false
+        _isListening.value = false
+        _pendingRiskyPlan.value = null
+
+        val stopReply = when (prefs.activePersona) {
+            PersonaType.GIRLFRIEND -> "Theek hai, ruk gayi main! Bolo ab kya karna hai 💕"
+            PersonaType.PROFESSIONAL -> "Stopped, Sir. Awaiting your next instruction."
+            PersonaType.BOLD -> "Ruk gayi. Bolo agla kaam kya hai!"
+        }
+        _saraResponse.value = stopReply
+    }
+
+    /** NEW: Clears the visible chat/interaction log only — learned memory is untouched. */
+    fun clearChatHistory() {
+        viewModelScope.launch {
+            db.jarvisDao().clearLogs()
         }
     }
 

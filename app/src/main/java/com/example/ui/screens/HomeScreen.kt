@@ -159,6 +159,30 @@ fun HomeScreen(
             }
         }
 
+        // NEW: Stop button - cancels whatever SARA is currently doing
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Surface(
+                    color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(16.dp),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFEF4444))
+                    ),
+                    modifier = Modifier
+                        .clickable { viewModel.stopSaraNow() }
+                        .testTag("sara_stop_btn")
+                ) {
+                    Text(
+                        text = "⏹ STOP",
+                        color = Color(0xFFEF4444),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+
         // Central SARA Voice Orb
         item {
             Column(
@@ -316,14 +340,29 @@ fun HomeScreen(
 
         // Neural Interaction Stream
         item {
-            Text(
-                text = "INTERACTION STREAM",
-                color = TextSecondary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "INTERACTION STREAM",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                // NEW: Clear chat button - clears the visible log only, memory stays intact
+                Text(
+                    text = "Clear",
+                    color = Color(0xFFEF4444),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clickable { viewModel.clearChatHistory() }
+                        .testTag("sara_clear_chat_btn")
+                )
+            }
         }
 
         if (interactionLogs.isEmpty()) {

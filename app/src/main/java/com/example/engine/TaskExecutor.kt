@@ -13,6 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 
 sealed class ExecutionState {
     object Idle : ExecutionState()
@@ -196,25 +199,69 @@ class TaskExecutor(
                         }
                         true
                     } else {
-                        // Contact not in address book -> Open WhatsApp and use accessibility automation to search and send
+                        // Contact not in address book -> Open WhatsApp and use accessibility automation to search and send.
+                        // Every step below is now VERIFIED before we move to the next one — this is what was
+                        // missing before, and is exactly why a message could end up typed into the wrong
+                        // field (e.g. the search box, or a "Meta AI" entry) instead of the intended chat.
                         DeviceActionHelper.launchAppByName(context, "whatsapp")
                         val service = JarvisAccessibilityService.instance
-                        if (service != null && contactName.isNotBlank()) {
-                            delay(1000)
-                            // 1. Click search in WhatsApp
-                            service.clickNodeByText("Search") || service.clickNodeByText("खोजें") || service.clickNodeByText("search")
-                            delay(600)
-                            // 2. Type contact name
-                            service.inputText(contactName)
-                            delay(800)
-                            // 3. Click matched contact
-                            service.clickNodeByText(contactName)
-                            delay(800)
-                            // 4. Type message
-                            service.inputText(message)
-                            delay(500)
-                            // 5. Click Send
-                            service.clickNodeByText("Send") || service.clickNodeByText("भेजें") || service.clickNodeByText("send")
+                        if (service == null || contactName.isBlank()) {
+                            return true
+                        }
+
+                        delay(1200)
+
+                        // 1. Open search - if we can't even find the search entry, stop here.
+                        val searchOpened = service.clickNodeByText("Search") ||
+                                service.clickNodeByText("खोजें") ||
+                                service.clickNodeByText("search")
+                        if (!searchOpened) {
+                            Log.e("TaskExecutor", "WhatsApp: could not open Search")
+                            return false
+                        }
+                        delay(700)
+
+                        // 2. Type contact name into search
+                        service.inputText(contactName)
+                        delay(900)
+
+                        // 3. Click the matched contact result - CHECK that the click actually landed.
+                        val contactClicked = service.clickNodeByText(contactName)
+                        if (!contactClicked) {
+                            Log.e("TaskExecutor", "WhatsApp: could not find/click contact '$contactName' in search results")
+                            return false
+                        }
+                        delay(900)
+
+                        // 3b. VERIFY we actually navigated into a chat screen (it must now have an
+                        // editable message box) before we type anything. This is the check that was
+                        // missing before - without it, a failed contact-click was silently ignored
+                        // and the message got typed into whatever was still focused (the search bar).
+                        var enteredChat = service.dumpScreenHierarchy().any { it.isEditable }
+                        if (!enteredChat) {
+                            delay(700)
+                            enteredChat = service.dumpScreenHierarchy().any { it.isEditable }
+                        }
+                        if (!enteredChat) {
+                            Log.e("TaskExecutor", "WhatsApp: did not land inside a chat for '$contactName' - aborting instead of guessing")
+                            return false
+                        }
+
+                        // 4. Type the message - only now that we've verified we're in the right chat.
+                        val typed = service.inputText(message)
+                        if (!typed) {
+                            Log.e("TaskExecutor", "WhatsApp: failed to type message for '$contactName'")
+                            return false
+                        }
+                        delay(500)
+
+                        // 5. Click Send
+                        val sendClicked = service.clickNodeByText("Send") ||
+                                service.clickNodeByText("भेजें") ||
+                                service.clickNodeByText("send")
+                        if (!sendClicked) {
+                            Log.e("TaskExecutor", "WhatsApp: could not find Send button for '$contactName'")
+                            return false
                         }
                         true
                     }
@@ -302,20 +349,34 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     val targetDesc = step.params["description"] ?: "button"
                     if (service != null) {
-                        var clicked = false
-                        service.captureScreenBitmap { bitmap ->
-                            if (bitmap != null) {
-                                kotlinx.coroutines.runBlocking {
-                                    val coords = llmEngine.queryGeminiVision(bitmap, targetDesc)
-                                    if (coords != null) {
-                                        service.clickCoordinates(coords.first, coords.second)
-                                        clicked = true
-                                    }
+                        // IMPORTANT: captureScreenBitmap's callback fires on the MAIN thread
+                        // (it's registered with mainExecutor). We bridge it into a suspend
+                        // call with suspendCancellableCoroutine instead of runBlocking, so we
+                        // never block the UI thread while waiting for the screenshot or the
+                        // Gemini Vision network call. withTimeoutOrNull guards against the
+                        // screenshot callback never firing at all (e.g. FLAG_SECURE screens).
+                        val bitmap = withTimeoutOrNull(8000) {
+                            suspendCancellableCoroutine<android.graphics.Bitmap?> { cont ->
+                                service.captureScreenBitmap { bmp ->
+                                    if (cont.isActive) cont.resume(bmp)
                                 }
                             }
                         }
-                        delay(1200)
-                        clicked || true
+
+                        if (bitmap != null) {
+                            val coords = llmEngine.queryGeminiVision(bitmap, targetDesc)
+                            if (coords != null) {
+                                service.clickCoordinates(coords.first, coords.second)
+                                delay(600)
+                                true
+                            } else {
+                                Log.e("TaskExecutor", "Vision fallback: Gemini could not locate '$targetDesc'")
+                                false
+                            }
+                        } else {
+                            Log.e("TaskExecutor", "Vision fallback: screenshot unavailable (timeout or secure screen)")
+                            false
+                        }
                     } else true
                 }
 

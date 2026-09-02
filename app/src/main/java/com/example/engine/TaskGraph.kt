@@ -78,7 +78,11 @@ data class TaskPlan(
     val steps: List<TaskStep>,
     val speechResponseHinglish: String,
     val requiresRiskyConfirmation: Boolean = false,
-    val confirmationPrompt: String = ""
+    val confirmationPrompt: String = "",
+    // NEW: set when this plan came from the crude local keyword-matcher instead of a real AI call,
+    // so the UI can show *why* instead of silently looking like a normal smart reply.
+    val usedFallback: Boolean = false,
+    val fallbackReason: String = ""
 ) {
     fun toJsonString(): String {
         val root = JSONObject()

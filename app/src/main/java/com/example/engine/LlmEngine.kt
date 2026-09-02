@@ -17,6 +17,12 @@ import java.util.concurrent.TimeUnit
 
 class LlmEngine(private val prefs: PreferencesManager) {
 
+    // NEW: records why the last provider call failed, so callers can show the real reason
+    // instead of silently handing back a generic canned reply.
+    @Volatile
+    var lastErrorReason: String = ""
+        private set
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(25, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
@@ -42,8 +48,11 @@ class LlmEngine(private val prefs: PreferencesManager) {
         // Ensure at least one API key is present or fall back to local heuristics
         if (!prefs.hasAnyApiKey()) {
             val localPlan = runLocalHeuristicPlanner(userInput)
-            return@withContext Result.success(localPlan)
+            return@withContext Result.success(
+                localPlan.copy(usedFallback = true, fallbackReason = "No API key configured in Settings")
+            )
         }
+        lastErrorReason = ""
 
         val preferred = prefs.preferredLlm
 
@@ -93,9 +102,11 @@ class LlmEngine(private val prefs: PreferencesManager) {
             }
         }
 
-        // Fallback to local heuristic planner
+        // Fallback to local heuristic planner — but now we say WHY instead of pretending
+        // this was a normal, fully-reasoned reply.
         val fallbackPlan = runLocalHeuristicPlanner(userInput)
-        Result.success(fallbackPlan)
+        val reason = lastErrorReason.ifBlank { "AI provider returned no usable response" }
+        Result.success(fallbackPlan.copy(usedFallback = true, fallbackReason = reason))
     }
 
     private fun callGemini(systemPrompt: String, userInput: String): String? {
@@ -139,10 +150,13 @@ class LlmEngine(private val prefs: PreferencesManager) {
                     return parts.getJSONObject(0).getString("text")
                 }
             } else {
-                Log.e("LlmEngine", "Gemini error: ${response.code} body: ${response.body?.string()}")
+                val errBody = response.body?.string() ?: ""
+                Log.e("LlmEngine", "Gemini error: ${response.code} body: $errBody")
+                lastErrorReason = "Gemini HTTP ${response.code}${if (errBody.isNotBlank()) ": ${errBody.take(120)}" else ""}"
             }
         } catch (e: Exception) {
             Log.e("LlmEngine", "Gemini exception", e)
+            lastErrorReason = "Gemini: ${e.message ?: e.javaClass.simpleName}"
         }
         return null
     }
@@ -186,10 +200,13 @@ class LlmEngine(private val prefs: PreferencesManager) {
                     .getJSONObject("message")
                     .getString("content")
             } else {
-                Log.e("LlmEngine", "Groq error: ${response.code} body: ${response.body?.string()}")
+                val errBody = response.body?.string() ?: ""
+                Log.e("LlmEngine", "Groq error: ${response.code} body: $errBody")
+                lastErrorReason = "Groq HTTP ${response.code}${if (errBody.isNotBlank()) ": ${errBody.take(120)}" else ""}"
             }
         } catch (e: Exception) {
             Log.e("LlmEngine", "Groq exception", e)
+            lastErrorReason = "Groq: ${e.message ?: e.javaClass.simpleName}"
         }
         return null
     }
@@ -233,9 +250,11 @@ class LlmEngine(private val prefs: PreferencesManager) {
                     .getString("content")
             } else {
                 Log.e("LlmEngine", "OpenRouter error: ${response.code}")
+                lastErrorReason = "OpenRouter HTTP ${response.code}"
             }
         } catch (e: Exception) {
             Log.e("LlmEngine", "OpenRouter exception", e)
+            lastErrorReason = "OpenRouter: ${e.message ?: e.javaClass.simpleName}"
         }
         return null
     }
