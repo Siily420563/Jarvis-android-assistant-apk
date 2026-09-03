@@ -38,6 +38,7 @@ import com.example.engine.LlmEngine
 import com.example.engine.StepStatus
 import com.example.engine.TaskExecutor
 import com.example.ui.components.FloatingOrbCanvasView
+import com.example.ui.components.ElementHighlightOverlay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,12 +55,14 @@ class JarvisFloatingBubbleService : Service() {
     private var windowManager: WindowManager? = null
     private var bubbleContainer: FrameLayout? = null
     private var orbView: FloatingOrbCanvasView? = null
+    private var highlightOverlay: ElementHighlightOverlay? = null
 
     private lateinit var prefs: PreferencesManager
     private lateinit var llmEngine: LlmEngine
     private lateinit var tts: JarvisSpeechSynthesizer
     private lateinit var db: JarvisDatabase
     private lateinit var executor: TaskExecutor
+    private lateinit var agentLoop: com.example.brain.AgentLoop
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -82,6 +85,7 @@ class JarvisFloatingBubbleService : Service() {
             tts = JarvisSpeechSynthesizer(this)
             db = JarvisDatabase.getInstance(this)
             executor = TaskExecutor(this, db, llmEngine)
+            agentLoop = com.example.brain.AgentLoop(this, db, prefs, llmEngine)
 
             startForegroundServiceNotification()
             setupFloatingOrb()
@@ -224,6 +228,30 @@ class JarvisFloatingBubbleService : Service() {
             }
 
             wm.addView(container, params)
+
+            // Attach element highlight overlay
+            val highlightParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            val overlay = ElementHighlightOverlay(this)
+            try {
+                wm.addView(overlay, highlightParams)
+                highlightOverlay = overlay
+                JarvisAccessibilityService.onElementHighlighted = { rect ->
+                    mainHandler.post {
+                        highlightOverlay?.setHighlight(rect)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SaraFloating", "Unable to add highlight overlay: ${e.message}")
+            }
         } catch (e: Exception) {
             Log.e("SaraFloating", "Error adding floating orb view", e)
         }
@@ -317,13 +345,20 @@ class JarvisFloatingBubbleService : Service() {
     }
 
     private fun onOrbTapped() {
+        if (orbView?.isProcessing == true) {
+            // Emergency Stop: user tapped while processing/executing
+            agentLoop.cancel()
+            executor.interruptCurrentExecution()
+            tts.stop()
+            orbView?.isProcessing = false
+            speakAndResumeSession("Stopped.")
+            return
+        }
+
         if (isAsleep) {
             // Currently asleep -> wake up and resume listening
             wakeUpAndStartListening()
         } else {
-            // Currently awake -> tapping again means "stop for now", not restart.
-            // (Previously both branches called wakeUpAndStartListening(), which is why
-            // tapping the orb never actually turned it off.)
             tts.stop()
             enterSleepState()
         }
@@ -509,6 +544,11 @@ class JarvisFloatingBubbleService : Service() {
             speechRecognizer?.destroy()
             speechRecognizer = null
         } catch (e: Exception) {}
+        highlightOverlay?.let {
+            try { windowManager?.removeView(it) } catch (e: Exception) {}
+            highlightOverlay = null
+        }
+        JarvisAccessibilityService.onElementHighlighted = null
         bubbleContainer?.let {
             try { windowManager?.removeView(it) } catch (e: Exception) {}
         }

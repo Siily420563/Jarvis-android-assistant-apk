@@ -13,7 +13,12 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import java.util.concurrent.Executor
+
+import com.example.perception.ScreenSerializer
+import com.example.perception.ScreenState
+import com.example.perception.UiElement
 
 data class ScreenNode(
     val text: String,
@@ -34,16 +39,38 @@ class JarvisAccessibilityService : AccessibilityService() {
 
         val isOnline: Boolean
             get() = instance != null
+
+        // Visual overlay highlight listener (used by floating HUD)
+        var onElementHighlighted: ((Rect?) -> Unit)? = null
     }
+
+    @Volatile
+    var currentForegroundPackage: String = ""
+        private set
+
+    @Volatile
+    var currentForegroundActivity: String = ""
+        private set
+
+    private var latestScreenState: ScreenState = ScreenState()
+    private val activeNodeMap = mutableMapOf<Int, AccessibilityNodeInfo>()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        Log.i("SaraAccessibility", "SARA Accessibility Automation Engine ONLINE")
+        Log.i("SaraAccessibility", "Jarvis Accessibility Automation Engine ONLINE")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Track active window events if needed
+        if (event == null) return
+        val pkg = event.packageName?.toString()
+        val cls = event.className?.toString()
+        if (!pkg.isNullOrBlank() && pkg != "com.example") {
+            currentForegroundPackage = pkg
+        }
+        if (!cls.isNullOrBlank() && cls.contains("Activity")) {
+            currentForegroundActivity = cls
+        }
     }
 
     override fun onInterrupt() {
@@ -55,6 +82,182 @@ class JarvisAccessibilityService : AccessibilityService() {
         if (instance == this) {
             instance = null
         }
+    }
+
+    // --- Enhanced Screen State Capture via ScreenSerializer ---
+
+    @Synchronized
+    fun captureScreenState(): ScreenState {
+        val rootNodes = mutableListOf<AccessibilityNodeInfo>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val winList = windows
+            if (!winList.isNullOrEmpty()) {
+                for (w in winList) {
+                    val root = w.root ?: continue
+                    rootNodes.add(root)
+                }
+            }
+        }
+        if (rootNodes.isEmpty()) {
+            rootInActiveWindow?.let { rootNodes.add(it) }
+        }
+
+        val state = ScreenSerializer.serialize(
+            roots = rootNodes,
+            packageName = currentForegroundPackage,
+            activityName = currentForegroundActivity,
+            isKeyboardOpen = isSoftKeyboardOpen()
+        )
+        latestScreenState = state
+
+        // Re-index nodes for fast lookup
+        activeNodeMap.clear()
+        indexNodes(rootNodes, state)
+
+        return state
+    }
+
+    private fun isSoftKeyboardOpen(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val wins = windows ?: return false
+            return wins.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+        }
+        return false
+    }
+
+    private fun indexNodes(roots: List<AccessibilityNodeInfo>, state: ScreenState) {
+        // Map element IDs to live AccessibilityNodeInfo instances matching bounds & text
+        for (root in roots) {
+            indexRecursive(root, state)
+        }
+    }
+
+    private fun indexRecursive(node: AccessibilityNodeInfo, state: ScreenState) {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+
+        val match = state.elements.firstOrNull { el ->
+            el.bounds == rect && (text.isBlank() || el.text == text) && (desc.isBlank() || el.contentDescription == desc)
+        }
+        if (match != null && !activeNodeMap.containsKey(match.id)) {
+            activeNodeMap[match.id] = node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            indexRecursive(child, state)
+        }
+    }
+
+    fun getElementById(id: Int): UiElement? {
+        return latestScreenState.elementLookup[id]
+    }
+
+    fun clickElementById(id: Int): Boolean {
+        val element = getElementById(id)
+        val rect = element?.bounds
+        if (rect != null) {
+            highlightElement(rect)
+        }
+
+        val liveNode = activeNodeMap[id]
+        if (liveNode != null) {
+            if (liveNode.isClickable && liveNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true
+            }
+            var p = liveNode.parent
+            while (p != null) {
+                if (p.isClickable && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return true
+                }
+                p = p.parent
+            }
+        }
+
+        // Coordinate click fallback
+        if (rect != null && !rect.isEmpty) {
+            return clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+        }
+        return false
+    }
+
+    fun longPressElementById(id: Int): Boolean {
+        val element = getElementById(id) ?: return false
+        val rect = element.bounds
+        highlightElement(rect)
+        return longPressCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+    }
+
+    fun doubleTapElementById(id: Int): Boolean {
+        val element = getElementById(id) ?: return false
+        val rect = element.bounds
+        highlightElement(rect)
+        val ok1 = clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+        android.os.SystemClock.sleep(120)
+        val ok2 = clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+        return ok1 || ok2
+    }
+
+    fun typeIntoElementById(id: Int, text: String, submit: Boolean = false): Boolean {
+        val element = getElementById(id)
+        val rect = element?.bounds
+        if (rect != null) {
+            highlightElement(rect)
+        }
+
+        val liveNode = activeNodeMap[id]
+        var typed = false
+
+        if (liveNode != null && (liveNode.isEditable || liveNode.isFocusable)) {
+            liveNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            typed = liveNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+
+        if (!typed && rect != null) {
+            // Tap to focus first, then set text
+            clickCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+            android.os.SystemClock.sleep(200)
+            typed = inputText(text)
+        }
+
+        if (submit) {
+            android.os.SystemClock.sleep(250)
+            // Look for send or search button
+            clickNodeByText("Send") || clickNodeByText("Search") || clickNodeByText("Go") || clickNodeByText("खोजें")
+        }
+
+        return typed
+    }
+
+    fun highlightElement(rect: Rect) {
+        onElementHighlighted?.invoke(rect)
+        Handler(Looper.getMainLooper()).postDelayed({
+            onElementHighlighted?.invoke(null)
+        }, 800)
+    }
+
+    fun longPressCoordinates(x: Float, y: Float): Boolean {
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 750))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    fun swipeCoordinates(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300): Boolean {
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, endY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(100)))
+            .build()
+        return dispatchGesture(gesture, null, null)
     }
 
     // --- Screen Node Hierarchy Dumper ---

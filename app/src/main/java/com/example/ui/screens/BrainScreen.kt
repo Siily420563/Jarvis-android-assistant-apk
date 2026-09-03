@@ -47,11 +47,21 @@ fun BrainScreen(viewModel: MainViewModel) {
     var groqModel by remember { mutableStateOf(prefs.groqModel) }
     var openRouterKey by remember { mutableStateOf(prefs.openRouterApiKey) }
     var openRouterModel by remember { mutableStateOf(prefs.openRouterModel) }
+    var openAiKey by remember { mutableStateOf(prefs.openAiApiKey) }
+    var openAiBaseUrl by remember { mutableStateOf(prefs.openAiBaseUrl) }
+    var openAiModel by remember { mutableStateOf(prefs.openAiModel) }
     var preferredLlm by remember { mutableStateOf(prefs.preferredLlm) }
 
     var showGeminiPass by remember { mutableStateOf(false) }
     var showGroqPass by remember { mutableStateOf(false) }
     var showOpenRouterPass by remember { mutableStateOf(false) }
+    var showOpenAiPass by remember { mutableStateOf(false) }
+
+    var confirmRiskyActions by remember { mutableStateOf(prefs.confirmRiskyActions) }
+    var maxAgentSteps by remember { mutableStateOf(prefs.maxAgentSteps) }
+    var verboseVoiceFeedback by remember { mutableStateOf(prefs.verboseVoiceFeedback) }
+    var protectedAppsSet by remember { mutableStateOf(prefs.protectedApps) }
+    var newCustomAppPackage by remember { mutableStateOf("") }
 
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -471,6 +481,84 @@ fun BrainScreen(viewModel: MainViewModel) {
             }
         }
 
+        // 4. OpenAI / Compatible Endpoint Card (Custom / Ollama / Local / vLLM / OpenAI)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "OPENAI / COMPATIBLE ENDPOINT",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = if (openAiKey.isNotBlank()) "CONFIGURED" else "OPTIONAL",
+                        color = if (openAiKey.isNotBlank()) StatusOnline else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = openAiBaseUrl,
+                    onValueChange = { openAiBaseUrl = it },
+                    label = { Text("Base URL (e.g. https://api.openai.com/v1)") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = openAiKey,
+                    onValueChange = { openAiKey = it },
+                    label = { Text("API Key") },
+                    visualTransformation = if (showOpenAiPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showOpenAiPass = !showOpenAiPass }) {
+                            Icon(
+                                imageVector = if (showOpenAiPass) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "Toggle Visibility",
+                                tint = TextSecondary
+                            )
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = openAiModel,
+                    onValueChange = { openAiModel = it },
+                    label = { Text("Model Name (e.g. gpt-4o-mini, deepseek-chat)") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = CyberCardBorder
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
         // Preferred Engine Choice
         Text(
             text = "PREFERRED ENGINE DISPATCH",
@@ -482,19 +570,124 @@ fun BrainScreen(viewModel: MainViewModel) {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            val options = listOf("AUTO", "GEMINI", "GROQ", "OPENROUTER")
+            val options = listOf("AUTO", "GEMINI", "GROQ", "OPENAI", "OPENROUTER")
             options.forEach { opt ->
                 FilterChip(
                     selected = preferredLlm == opt,
                     onClick = { preferredLlm = opt },
-                    label = { Text(opt, fontSize = 11.sp) },
+                    label = { Text(opt, fontSize = 10.sp) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = SaraPink,
                         selectedLabelColor = Color.White
                     )
                 )
+            }
+        }
+
+        // Autonomous Agent & Safety Configuration Card
+        Text(
+            text = "AUTONOMOUS AGENT & SAFETY POLICY",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Confirm Risky Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Confirm Risky Actions", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("Prompts user confirmation before financial apps, uninstall, or settings reset", color = TextSecondary, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = confirmRiskyActions,
+                        onCheckedChange = { confirmRiskyActions = it }
+                    )
+                }
+
+                HorizontalDivider(color = CyberCardBorder)
+
+                // Verbose Voice Feedback
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Speak Action Steps", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("Announces what Jarvis is doing on screen at each autonomous step", color = TextSecondary, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = verboseVoiceFeedback,
+                        onCheckedChange = { verboseVoiceFeedback = it }
+                    )
+                }
+
+                HorizontalDivider(color = CyberCardBorder)
+
+                // Max Agent Autonomous Steps
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Max Autonomous ReAct Steps", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("$maxAgentSteps steps", color = NeonCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = maxAgentSteps.toFloat(),
+                        onValueChange = { maxAgentSteps = it.toInt() },
+                        valueRange = 5f..50f,
+                        steps = 8,
+                        colors = SliderDefaults.colors(thumbColor = NeonCyan, activeTrackColor = NeonCyan)
+                    )
+                }
+
+                HorizontalDivider(color = CyberCardBorder)
+
+                // Protected Apps List
+                Column {
+                    Text("Protected Sensitive Apps (Requires Confirmation)", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val defaultApps = listOf("phonepe", "paytm", "gpay", "bhim", "cred")
+                        defaultApps.forEach { appKey ->
+                            val isProtected = protectedAppsSet.contains(appKey)
+                            FilterChip(
+                                selected = isProtected,
+                                onClick = {
+                                    protectedAppsSet = if (isProtected) {
+                                        protectedAppsSet - appKey
+                                    } else {
+                                        protectedAppsSet + appKey
+                                    }
+                                },
+                                label = { Text(appKey.uppercase(), fontSize = 10.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFEF4444),
+                                    selectedLabelColor = Color.White
+                                )
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -656,7 +849,14 @@ fun BrainScreen(viewModel: MainViewModel) {
                     persona = selectedPersona,
                     geminiModel = geminiModel,
                     groqModel = groqModel,
-                    openRouterModel = openRouterModel
+                    openRouterModel = openRouterModel,
+                    openAiKey = openAiKey,
+                    openAiBaseUrl = openAiBaseUrl,
+                    openAiModel = openAiModel,
+                    protectedApps = protectedAppsSet,
+                    maxAgentSteps = maxAgentSteps,
+                    confirmRiskyActions = confirmRiskyActions,
+                    verboseVoiceFeedback = verboseVoiceFeedback
                 )
             },
             colors = ButtonDefaults.buttonColors(containerColor = SaraPink),

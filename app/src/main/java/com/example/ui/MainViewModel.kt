@@ -28,6 +28,9 @@ import com.example.engine.InterruptedTaskState
 import com.example.engine.LlmEngine
 import com.example.engine.TaskExecutor
 import com.example.engine.TaskPlan
+import com.example.engine.TaskStep
+import com.example.engine.StepType
+import com.example.engine.StepStatus
 import com.example.persona.PersonaType
 import com.example.service.JarvisAccessibilityService
 import com.example.service.JarvisFloatingBubbleService
@@ -45,6 +48,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val llmEngine = LlmEngine(prefs)
     val tts = JarvisSpeechSynthesizer(application)
     val executor = TaskExecutor(application, db, llmEngine)
+    val agentLoop = com.example.brain.AgentLoop(application, db, prefs, llmEngine)
 
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -309,8 +313,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var currentCommandJob: Job? = null
 
+    fun executeAutonomousGoal(goal: String) {
+        if (goal.isBlank()) return
+        _recognizedText.value = goal
+        _pendingRiskyPlan.value = null
+        _interruptedTask.value = null
+        _isProcessing.value = true
+
+        val startMsg = when (prefs.activePersona) {
+            PersonaType.GIRLFRIEND -> "Samajh gayi! Screen par step-by-step aapka kaam kar rahi hoon 💕"
+            PersonaType.PROFESSIONAL -> "Initiating autonomous ReAct agent loop for: $goal"
+            PersonaType.BOLD -> "Agent loop start! Kaam shuru karte hain."
+        }
+        _saraResponse.value = startMsg
+        speakAndPromptNext(startMsg)
+
+        val steps = mutableListOf<TaskStep>()
+        val dynamicPlan = TaskPlan(
+            originalQuery = goal,
+            intentKey = "AUTONOMOUS_AGENT",
+            steps = steps,
+            speechResponseHinglish = startMsg
+        )
+        _currentTaskPlan.value = dynamicPlan
+
+        currentCommandJob?.cancel()
+        currentCommandJob = viewModelScope.launch {
+            db.jarvisDao().insertLog(InteractionLog(text = goal, isUser = true))
+
+            agentLoop.executeGoal(
+                userGoal = goal,
+                maxSteps = prefs.maxAgentSteps,
+                onStepStarted = { stepIndex, thought, action ->
+                    val newStep = TaskStep(
+                        id = "step_$stepIndex",
+                        type = StepType.ACCESSIBILITY_TAP_TEXT,
+                        params = mapOf("action" to action.toString()),
+                        descriptionHinglish = "Step $stepIndex: $thought",
+                        status = StepStatus.RUNNING
+                    )
+                    val updatedSteps = steps.toMutableList()
+                    if (stepIndex > updatedSteps.size) {
+                        updatedSteps.add(newStep)
+                    } else {
+                        updatedSteps[stepIndex - 1] = newStep
+                    }
+                    steps.clear()
+                    steps.addAll(updatedSteps)
+                    _currentTaskPlan.value = dynamicPlan.copy(steps = updatedSteps.toList())
+
+                    if (prefs.verboseVoiceFeedback) {
+                        speakAndPromptNext(thought)
+                    }
+                },
+                onStepExecuted = { stepIndex, result ->
+                    if (stepIndex <= steps.size) {
+                        val current = steps[stepIndex - 1]
+                        val updated = current.copy(
+                            status = if (result.success) StepStatus.SUCCESS else StepStatus.FAILED,
+                            errorMessage = if (!result.success) result.message else null
+                        )
+                        steps[stepIndex - 1] = updated
+                        _currentTaskPlan.value = dynamicPlan.copy(steps = steps.toList())
+                    }
+                },
+                onConfirmationRequired = { reason ->
+                    val prompt = "⚠️ $reason Kya main aage badhoon?"
+                    _saraResponse.value = prompt
+                    speakAndPromptNext(prompt)
+                    true
+                },
+                onComplete = { summary, success ->
+                    _isProcessing.value = false
+                    _saraResponse.value = summary
+                    speakAndPromptNext(summary)
+                    viewModelScope.launch {
+                        try {
+                            db.jarvisDao().insertLog(InteractionLog(text = summary, isUser = false))
+                        } catch (e: Exception) {}
+                    }
+                }
+            )
+        }
+    }
+
     fun executeUserCommand(query: String) {
         if (query.isBlank()) return
+        val clean = query.trim().lowercase()
+        if (clean.startsWith("agent ") || clean.startsWith("auto ") || clean.startsWith("goal ") || clean.startsWith("react ")) {
+            val stripped = query.substringAfter(" ").trim()
+            executeAutonomousGoal(if (stripped.isNotBlank()) stripped else query)
+            return
+        }
+
         _recognizedText.value = query
         _pendingRiskyPlan.value = null
 
@@ -458,6 +553,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _interruptedTask.value = interrupted
         }
         currentCommandJob?.cancel()
+        agentLoop.cancel()
         tts.stop()
         speechRecognizer?.stopListening()
         com.example.audio.MicArbiter.release("app")
@@ -534,17 +630,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persona: PersonaType,
         geminiModel: String = "gemini-3.7-flash",
         groqModel: String = "llama-3.3-70b-versatile",
-        openRouterModel: String = "anthropic/claude-3.7-sonnet"
+        openRouterModel: String = "anthropic/claude-3.7-sonnet",
+        openAiKey: String = "",
+        openAiBaseUrl: String = "https://api.openai.com/v1",
+        openAiModel: String = "gpt-4o-mini",
+        protectedApps: Set<String> = emptySet(),
+        maxAgentSteps: Int = 25,
+        confirmRiskyActions: Boolean = true,
+        verboseVoiceFeedback: Boolean = true
     ) {
         prefs.geminiApiKey = geminiKey.trim()
         prefs.groqApiKey = groqKey.trim()
         prefs.openRouterApiKey = openRouterKey.trim()
+        prefs.openAiApiKey = openAiKey.trim()
+        prefs.openAiBaseUrl = openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" }
+        prefs.openAiModel = openAiModel.trim().ifBlank { "gpt-4o-mini" }
         prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.7-flash" }
         prefs.groqModel = groqModel.trim().ifBlank { "llama-3.3-70b-versatile" }
         prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-3.7-sonnet" }
         prefs.preferredLlm = preferredLlm
         prefs.assistantName = assistantName.trim().ifBlank { "SARA" }
         prefs.activePersona = persona
+        prefs.protectedApps = protectedApps
+        prefs.maxAgentSteps = maxAgentSteps
+        prefs.confirmRiskyActions = confirmRiskyActions
+        prefs.verboseVoiceFeedback = verboseVoiceFeedback
+
         _activePersona.value = persona
         _hasAnyKey.value = prefs.hasAnyApiKey()
 

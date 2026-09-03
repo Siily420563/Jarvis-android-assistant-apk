@@ -66,10 +66,25 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val contactsPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { _ ->
+                    viewModel.checkSystemPermissionsStatus()
+                }
+
                 MainScreenContent(
                     viewModel = viewModel,
                     onRequestMicPermission = {
                         micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    onRequestContactsPermission = {
+                        contactsPermissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.READ_CONTACTS,
+                                Manifest.permission.CALL_PHONE,
+                                Manifest.permission.SEND_SMS
+                            )
+                        )
                     },
                     onOpenAccessibilitySettings = {
                         try {
@@ -116,6 +131,7 @@ enum class SaraTab {
 fun MainScreenContent(
     viewModel: MainViewModel,
     onRequestMicPermission: () -> Unit,
+    onRequestContactsPermission: () -> Unit = {},
     onOpenAccessibilitySettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit
 ) {
@@ -262,6 +278,7 @@ fun MainScreenContent(
                 SaraTab.HOME -> HomeScreen(
                     viewModel = viewModel,
                     onRequestMicPermission = onRequestMicPermission,
+                    onRequestContactsPermission = onRequestContactsPermission,
                     onOpenAccessibilitySettings = onOpenAccessibilitySettings,
                     onOpenOverlaySettings = onOpenOverlaySettings,
                     onNavigateToBrain = { selectedTab = SaraTab.STUDIO }

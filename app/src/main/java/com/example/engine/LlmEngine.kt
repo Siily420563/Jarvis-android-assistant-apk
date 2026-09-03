@@ -67,6 +67,8 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 responseJsonStr = callGemini(systemPrompt, userInput)
             } else if (preferred == "GROQ" && prefs.groqApiKey.isNotBlank()) {
                 responseJsonStr = callGroq(systemPrompt, userInput)
+            } else if (preferred == "OPENAI" && prefs.openAiApiKey.isNotBlank()) {
+                responseJsonStr = callOpenAi(systemPrompt, userInput)
             } else if (preferred == "OPENROUTER" && prefs.openRouterApiKey.isNotBlank()) {
                 responseJsonStr = callOpenRouter(systemPrompt, userInput)
             }
@@ -74,7 +76,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
             Log.w("LlmEngine", "Preferred LLM call error: ${e.message}")
         }
 
-        // 2. Cascade Fallback (Primary: Gemini -> Groq -> OpenRouter)
+        // 2. Cascade Fallback (Primary: Gemini -> Groq -> OpenAI -> OpenRouter)
         if (responseJsonStr == null && prefs.geminiApiKey.isNotBlank()) {
             Log.d("LlmEngine", "Attempting Primary: Gemini")
             responseJsonStr = callGemini(systemPrompt, userInput)
@@ -82,6 +84,10 @@ class LlmEngine(private val prefs: PreferencesManager) {
         if (responseJsonStr == null && prefs.groqApiKey.isNotBlank()) {
             Log.d("LlmEngine", "Fallback to Groq")
             responseJsonStr = callGroq(systemPrompt, userInput)
+        }
+        if (responseJsonStr == null && prefs.openAiApiKey.isNotBlank()) {
+            Log.d("LlmEngine", "Fallback to OpenAI")
+            responseJsonStr = callOpenAi(systemPrompt, userInput)
         }
         if (responseJsonStr == null && prefs.openRouterApiKey.isNotBlank()) {
             Log.d("LlmEngine", "Fallback to OpenRouter")
@@ -261,6 +267,97 @@ class LlmEngine(private val prefs: PreferencesManager) {
             lastErrorReason = "OpenRouter: ${e.message ?: e.javaClass.simpleName}"
         }
         return null
+    }
+
+    private fun callOpenAi(systemPrompt: String, userInput: String): String? {
+        val key = prefs.openAiApiKey
+        if (key.isBlank()) return null
+        try {
+            val baseUrl = prefs.openAiBaseUrl.trimEnd('/')
+            val model = prefs.openAiModel.ifBlank { "gpt-4o-mini" }
+            val jsonBody = JSONObject().apply {
+                put("model", model)
+                put("messages", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "system")
+                        put("content", systemPrompt)
+                    })
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", userInput)
+                    })
+                })
+                put("response_format", JSONObject().apply {
+                    put("type", "json_object")
+                })
+                put("temperature", 0.3)
+            }
+
+            val request = Request.Builder()
+                .url("$baseUrl/chat/completions")
+                .addHeader("Authorization", "Bearer $key")
+                .addHeader("Content-Type", "application/json")
+                .post(jsonBody.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                val respStr = response.body?.string() ?: return null
+                val json = JSONObject(respStr)
+                return json.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message")
+                    .getString("content")
+            } else {
+                val errBody = response.body?.string() ?: ""
+                Log.e("LlmEngine", "OpenAI error: ${response.code} body: $errBody")
+                lastErrorReason = "OpenAI HTTP ${response.code}${if (errBody.isNotBlank()) ": ${errBody.take(120)}" else ""}"
+            }
+        } catch (e: Exception) {
+            Log.e("LlmEngine", "OpenAI exception", e)
+            lastErrorReason = "OpenAI: ${e.message ?: e.javaClass.simpleName}"
+        }
+        return null
+    }
+
+    /**
+     * Direct query for autonomous agent loop execution (AgentLoop).
+     * Sends the complete prompt to the active provider and returns JSON string.
+     */
+    suspend fun queryPlan(fullPrompt: String): String? = withContext(Dispatchers.IO) {
+        val preferred = prefs.preferredLlm
+        var res: String? = null
+
+        // Try preferred provider first
+        try {
+            if (preferred == "GEMINI" && prefs.geminiApiKey.isNotBlank()) {
+                res = callGemini("", fullPrompt)
+            } else if (preferred == "GROQ" && prefs.groqApiKey.isNotBlank()) {
+                res = callGroq("", fullPrompt)
+            } else if (preferred == "OPENAI" && prefs.openAiApiKey.isNotBlank()) {
+                res = callOpenAi("", fullPrompt)
+            } else if (preferred == "OPENROUTER" && prefs.openRouterApiKey.isNotBlank()) {
+                res = callOpenRouter("", fullPrompt)
+            }
+        } catch (e: Exception) {
+            Log.w("LlmEngine", "Direct query preferred error: ${e.message}")
+        }
+
+        // Fallback cascade
+        if (res == null && prefs.geminiApiKey.isNotBlank()) {
+            res = callGemini("", fullPrompt)
+        }
+        if (res == null && prefs.groqApiKey.isNotBlank()) {
+            res = callGroq("", fullPrompt)
+        }
+        if (res == null && prefs.openAiApiKey.isNotBlank()) {
+            res = callOpenAi("", fullPrompt)
+        }
+        if (res == null && prefs.openRouterApiKey.isNotBlank()) {
+            res = callOpenRouter("", fullPrompt)
+        }
+
+        res
     }
 
     suspend fun queryGeminiVision(

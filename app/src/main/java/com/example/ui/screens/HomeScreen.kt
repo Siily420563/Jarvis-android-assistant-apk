@@ -38,6 +38,7 @@ import com.example.ui.theme.*
 fun HomeScreen(
     viewModel: MainViewModel,
     onRequestMicPermission: () -> Unit = {},
+    onRequestContactsPermission: () -> Unit = {},
     onOpenAccessibilitySettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onNavigateToBrain: () -> Unit
@@ -49,6 +50,8 @@ fun HomeScreen(
     val isAccessibilityOnline by viewModel.isAccessibilityOnline.collectAsState()
     val isOverlayAuthorized by viewModel.isOverlayAuthorized.collectAsState()
     val isMicGranted by viewModel.isMicGranted.collectAsState()
+    val isBatteryExempted by viewModel.isBatteryExempted.collectAsState()
+    val isPhoneContactsGranted by viewModel.isPhoneContactsGranted.collectAsState()
     val hasAnyKey by viewModel.hasAnyKey.collectAsState()
     val activePersona by viewModel.activePersona.collectAsState()
     val currentTaskPlan by viewModel.currentTaskPlan.collectAsState()
@@ -401,6 +404,19 @@ fun HomeScreen(
                 )
                 QuickActionChips(onChipClick = { viewModel.executeUserCommand(it) })
             }
+        }
+
+        // Step-by-Step Onboarding Permissions Walkthrough
+        item {
+            OnboardingPermissionsCard(
+                isAccessibilityOnline = isAccessibilityOnline,
+                isOverlayAuthorized = isOverlayAuthorized,
+                isMicGranted = isMicGranted,
+                isBatteryExempted = isBatteryExempted,
+                isContactsGranted = isPhoneContactsGranted,
+                onRequestMic = onRequestMicPermission,
+                onRequestContacts = onRequestContactsPermission
+            )
         }
 
         // System Access Permission Status Cards

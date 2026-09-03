@@ -69,7 +69,31 @@ class PreferencesManager(context: Context) {
         get() = prefs.getBoolean("confirm_risky_actions", true)
         set(value) = prefs.edit().putBoolean("confirm_risky_actions", value).apply()
 
+    var maxAgentSteps: Int
+        get() = prefs.getInt("max_agent_steps", 25)
+        set(value) = prefs.edit().putInt("max_agent_steps", value.coerceIn(5, 50)).apply()
+
+    var verboseVoiceFeedback: Boolean
+        get() = prefs.getBoolean("verbose_voice_feedback", true)
+        set(value) = prefs.edit().putBoolean("verbose_voice_feedback", value).apply()
+
+    var protectedApps: Set<String>
+        get() = prefs.getStringSet("protected_apps_set", setOf("phonepe", "paytm", "gpay", "bhim", "cred")) ?: emptySet()
+        set(value) = prefs.edit().putStringSet("protected_apps_set", value).apply()
+
+    var openAiApiKey: String
+        get() = prefs.getString("openai_api_key", "") ?: ""
+        set(value) = prefs.edit().putString("openai_api_key", value).apply()
+
+    var openAiBaseUrl: String
+        get() = prefs.getString("openai_base_url", "https://api.openai.com/v1") ?: "https://api.openai.com/v1"
+        set(value) = prefs.edit().putString("openai_base_url", value).apply()
+
+    var openAiModel: String
+        get() = prefs.getString("openai_model", "gpt-4o-mini") ?: "gpt-4o-mini"
+        set(value) = prefs.edit().putString("openai_model", value).apply()
+
     fun hasAnyApiKey(): Boolean {
-        return geminiApiKey.isNotBlank() || groqApiKey.isNotBlank() || openRouterApiKey.isNotBlank()
+        return geminiApiKey.isNotBlank() || groqApiKey.isNotBlank() || openRouterApiKey.isNotBlank() || openAiApiKey.isNotBlank()
     }
 }
