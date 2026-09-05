@@ -65,9 +65,14 @@ class JarvisAccessibilityService : AccessibilityService() {
         if (event == null) return
         val pkg = event.packageName?.toString()
         val cls = event.className?.toString()
-        if (!pkg.isNullOrBlank() && pkg != "com.example") {
-            currentForegroundPackage = pkg
+
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val isInputMethod = cls?.contains("InputMethod") == true
+            if (!pkg.isNullOrBlank() && pkg != packageName && pkg != "com.android.systemui" && !isInputMethod) {
+                currentForegroundPackage = pkg
+            }
         }
+
         if (!cls.isNullOrBlank() && cls.contains("Activity")) {
             currentForegroundActivity = cls
         }

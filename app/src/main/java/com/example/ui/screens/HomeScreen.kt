@@ -53,6 +53,7 @@ fun HomeScreen(
     val isBatteryExempted by viewModel.isBatteryExempted.collectAsState()
     val isPhoneContactsGranted by viewModel.isPhoneContactsGranted.collectAsState()
     val hasAnyKey by viewModel.hasAnyKey.collectAsState()
+    val isGeminiKeyBlank by viewModel.isGeminiKeyBlank.collectAsState()
     val activePersona by viewModel.activePersona.collectAsState()
     val currentTaskPlan by viewModel.currentTaskPlan.collectAsState()
     val pendingRiskyPlan by viewModel.pendingRiskyPlan.collectAsState()
@@ -101,6 +102,41 @@ fun HomeScreen(
         contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Red banner when Gemini API key is missing
+        if (isGeminiKeyBlank) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNavigateToBrain() }
+                        .testTag("gemini_key_missing_banner"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Warning",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Gemini API key missing — Settings me add karo",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
         // Persona Quick-Badge & Model Header
         item {
             Row(

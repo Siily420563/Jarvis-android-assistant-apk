@@ -53,6 +53,8 @@ fun BrainScreen(viewModel: MainViewModel) {
     var preferredLlm by remember { mutableStateOf(prefs.preferredLlm) }
 
     var showGeminiPass by remember { mutableStateOf(false) }
+    var geminiTestStatus by remember { mutableStateOf<String?>(null) }
+    var isTestingGemini by remember { mutableStateOf(false) }
     var showGroqPass by remember { mutableStateOf(false) }
     var showOpenRouterPass by remember { mutableStateOf(false) }
     var showOpenAiPass by remember { mutableStateOf(false) }
@@ -294,6 +296,43 @@ fun BrainScreen(viewModel: MainViewModel) {
                         .fillMaxWidth()
                         .testTag("gemini_api_key_input")
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = {
+                            isTestingGemini = true
+                            geminiTestStatus = "Testing..."
+                            viewModel.testGeminiConnection(geminiKey) { status ->
+                                geminiTestStatus = status
+                                isTestingGemini = false
+                            }
+                        },
+                        enabled = !isTestingGemini,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SaraPink.copy(alpha = 0.3f),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("test_gemini_connection_button")
+                    ) {
+                        Text(if (isTestingGemini) "Testing..." else "Test connection", fontSize = 12.sp)
+                    }
+
+                    if (geminiTestStatus != null) {
+                        val isSuccess = geminiTestStatus?.startsWith("HTTP 200") == true
+                        Text(
+                            text = geminiTestStatus ?: "",
+                            color = if (isSuccess) StatusOnline else Color(0xFFEF4444),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("gemini_connection_status")
+                        )
+                    }
+                }
 
                 Text("Smartest Gemini Model Selection (AI Studio):", color = TextSecondary, fontSize = 11.sp)
                 @OptIn(ExperimentalLayoutApi::class)

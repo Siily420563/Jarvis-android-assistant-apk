@@ -23,10 +23,17 @@ class LlmEngine(private val prefs: PreferencesManager) {
     var lastErrorReason: String = ""
         private set
 
+    var onHttp4xxError: ((String) -> Unit)? = null
+
+    @Volatile
+    private var hadHttp4xxError = false
+    @Volatile
+    private var lastHttp4xxMessage = ""
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .writeTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -57,6 +64,8 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
         lastErrorReason = ""
+        hadHttp4xxError = false
+        lastHttp4xxMessage = ""
 
         val preferred = prefs.preferredLlm
 
@@ -77,21 +86,34 @@ class LlmEngine(private val prefs: PreferencesManager) {
         }
 
         // 2. Cascade Fallback (Primary: Gemini -> Groq -> OpenAI -> OpenRouter)
-        if (responseJsonStr == null && prefs.geminiApiKey.isNotBlank()) {
+        if (responseJsonStr == null && prefs.geminiApiKey.isNotBlank() && !hadHttp4xxError) {
             Log.d("LlmEngine", "Attempting Primary: Gemini")
             responseJsonStr = callGemini(systemPrompt, userInput)
         }
-        if (responseJsonStr == null && prefs.groqApiKey.isNotBlank()) {
+        if (responseJsonStr == null && prefs.groqApiKey.isNotBlank() && !hadHttp4xxError) {
             Log.d("LlmEngine", "Fallback to Groq")
             responseJsonStr = callGroq(systemPrompt, userInput)
         }
-        if (responseJsonStr == null && prefs.openAiApiKey.isNotBlank()) {
+        if (responseJsonStr == null && prefs.openAiApiKey.isNotBlank() && !hadHttp4xxError) {
             Log.d("LlmEngine", "Fallback to OpenAI")
             responseJsonStr = callOpenAi(systemPrompt, userInput)
         }
-        if (responseJsonStr == null && prefs.openRouterApiKey.isNotBlank()) {
+        if (responseJsonStr == null && prefs.openRouterApiKey.isNotBlank() && !hadHttp4xxError) {
             Log.d("LlmEngine", "Fallback to OpenRouter")
             responseJsonStr = callOpenRouter(systemPrompt, userInput)
+        }
+
+        // When response was HTTP 4xx, surface the error and do not silently use heuristic planner
+        if (hadHttp4xxError) {
+            val errorPlan = TaskPlan(
+                originalQuery = userInput,
+                intentKey = "ERROR",
+                steps = emptyList(),
+                speechResponseHinglish = "API key ya model me problem hai",
+                usedFallback = true,
+                fallbackReason = lastHttp4xxMessage
+            )
+            return@withContext Result.success(errorPlan)
         }
 
         // Parse Plan
@@ -123,19 +145,30 @@ class LlmEngine(private val prefs: PreferencesManager) {
         val key = prefs.geminiApiKey
         if (key.isBlank()) return null
         try {
-            val fullPrompt = "$systemPrompt\n\nUser Request: $userInput"
             val jsonBody = JSONObject().apply {
+                if (systemPrompt.isNotBlank()) {
+                    put("systemInstruction", JSONObject().apply {
+                        put("parts", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("text", systemPrompt)
+                            })
+                        })
+                    })
+                }
                 put("contents", JSONArray().apply {
                     put(JSONObject().apply {
                         put("parts", JSONArray().apply {
                             put(JSONObject().apply {
-                                put("text", fullPrompt)
+                                put("text", userInput)
                             })
                         })
                     })
                 })
                 put("generationConfig", JSONObject().apply {
-                    put("temperature", 0.3)
+                    put("temperature", 0.1)
+                    put("thinkingConfig", JSONObject().apply {
+                        put("thinkingBudget", 0)
+                    })
                     put("responseMimeType", "application/json")
                 })
             }
@@ -162,7 +195,14 @@ class LlmEngine(private val prefs: PreferencesManager) {
             } else {
                 val errBody = response.body?.string() ?: ""
                 Log.e("LlmEngine", "Gemini error: ${response.code} body: $errBody")
-                lastErrorReason = "Gemini HTTP ${response.code}${if (errBody.isNotBlank()) ": ${errBody.take(120)}" else ""}"
+                val errorMsg = "Gemini HTTP ${response.code}${if (errBody.isNotBlank()) ": $errBody" else ""}"
+                lastErrorReason = errorMsg
+                if (response.code in 400..499) {
+                    hadHttp4xxError = true
+                    lastHttp4xxMessage = errorMsg
+                    onHttp4xxError?.invoke(errorMsg)
+                    com.example.audio.JarvisSpeechSynthesizer.instance?.speakLocal("API key ya model me problem hai")
+                }
             }
         } catch (e: Exception) {
             Log.e("LlmEngine", "Gemini exception", e)

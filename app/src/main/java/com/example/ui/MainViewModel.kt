@@ -40,6 +40,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -93,6 +97,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _hasAnyKey = MutableStateFlow(prefs.hasAnyApiKey())
     val hasAnyKey: StateFlow<Boolean> = _hasAnyKey.asStateFlow()
 
+    private val _isGeminiKeyBlank = MutableStateFlow(prefs.geminiApiKey.isBlank())
+    val isGeminiKeyBlank: StateFlow<Boolean> = _isGeminiKeyBlank.asStateFlow()
+
     // Confirmation for risky actions (Payments / Deletions)
     private val _pendingRiskyPlan = MutableStateFlow<TaskPlan?>(null)
     val pendingRiskyPlan: StateFlow<TaskPlan?> = _pendingRiskyPlan.asStateFlow()
@@ -104,6 +111,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         checkSystemPermissionsStatus()
         setInitialGreeting()
+        llmEngine.onHttp4xxError = { errorText ->
+            _saraResponse.value = "⚠️ $errorText"
+        }
     }
 
     private fun setInitialGreeting() {
@@ -132,6 +142,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ) == PackageManager.PERMISSION_GRANTED
         _hasAnyKey.value = prefs.hasAnyApiKey()
         _activePersona.value = prefs.activePersona
+        _isGeminiKeyBlank.value = prefs.geminiApiKey.isBlank()
     }
 
     private var isContinuousListeningMode = false
@@ -380,8 +391,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onConfirmationRequired = { reason ->
                     val prompt = "⚠️ $reason Kya main aage badhoon?"
                     _saraResponse.value = prompt
-                    speakAndPromptNext(prompt)
-                    true
+
+                    val deferred = CompletableDeferred<Boolean>()
+
+                    withContext(Dispatchers.Main) {
+                        speakAndPromptNext(prompt) {
+                            startSingleTurnMic { recognized ->
+                                val text = recognized.trim().lowercase()
+                                val yesRegex = Regex("\\b(haan|ha|yes|kar do|karo|ok|theek)\\b", RegexOption.IGNORE_CASE)
+                                val noRegex = Regex("\\b(nahi|na|no|mat|ruk|cancel)\\b", RegexOption.IGNORE_CASE)
+                                if (yesRegex.containsMatchIn(text)) {
+                                    deferred.complete(true)
+                                } else if (noRegex.containsMatchIn(text)) {
+                                    deferred.complete(false)
+                                }
+                            }
+                        }
+                    }
+
+                    val result = withTimeoutOrNull(10000L) {
+                        deferred.await()
+                    } ?: false
+
+                    if (!deferred.isCompleted) {
+                        deferred.complete(false)
+                    }
+                    withContext(Dispatchers.Main) {
+                        stopListening()
+                    }
+                    result
                 },
                 onComplete = { summary, success ->
                     _isProcessing.value = false
@@ -658,10 +696,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         _activePersona.value = persona
         _hasAnyKey.value = prefs.hasAnyApiKey()
+        _isGeminiKeyBlank.value = prefs.geminiApiKey.isBlank()
 
         val reply = "Settings update ho gayi hain! SARA is configured with the latest smart models."
         _saraResponse.value = reply
         speakAndPromptNext(reply)
+    }
+
+    fun testGeminiConnection(keyToTest: String, onResult: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val key = keyToTest.trim().ifBlank { prefs.geminiApiKey }
+            if (key.isBlank()) {
+                withContext(Dispatchers.Main) {
+                    onResult("Error: Gemini API key missing")
+                }
+                return@launch
+            }
+            try {
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val req = okhttp3.Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models?key=$key")
+                    .get()
+                    .build()
+                val resp = client.newCall(req).execute()
+                val status = "HTTP ${resp.code} ${resp.message.ifBlank { if (resp.code == 200) "OK" else "" }}".trim()
+                withContext(Dispatchers.Main) {
+                    onResult(status)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult("Error: ${e.message ?: "Failed"}")
+                }
+            }
+        }
     }
 
     fun toggleFloatingBubble(context: Context) {

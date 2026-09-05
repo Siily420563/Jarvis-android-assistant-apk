@@ -61,6 +61,11 @@ jobs:
           fi
           echo "debug.keystore successfully verified."
 
+      - name: Write .env from secrets
+        run: |
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
+          echo "PORCUPINE_ACCESS_KEY=${{ secrets.PORCUPINE_ACCESS_KEY }}" >> .env
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 
