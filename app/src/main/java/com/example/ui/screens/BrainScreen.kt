@@ -27,6 +27,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.persona.PersonaType
+import com.example.debug.SystemLogBus
+import com.example.debug.LogLevel
 import com.example.ui.MainViewModel
 import com.example.ui.theme.*
 
@@ -913,6 +915,90 @@ fun BrainScreen(viewModel: MainViewModel) {
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp
             )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // System Logs & Circuit Breaker Terminal Card
+        val sysLogs by viewModel.systemLogs.collectAsState()
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(CyberCardBorder)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "CIRCUIT BREAKER & SYSTEM LOGS",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Text(
+                            text = "Real-time provider health, errors & budget monitor",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                    TextButton(onClick = { SystemLogBus.clear() }) {
+                        Text("CLEAR", color = NeonCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                if (sysLogs.isEmpty()) {
+                    Text(
+                        text = "No system events yet. All AI pipelines healthy.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0D1117), RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        sysLogs.takeLast(12).reversed().forEach { entry ->
+                            val badgeColor = when (entry.level) {
+                                LogLevel.ERROR -> Color(0xFFEF5350)
+                                LogLevel.WARN -> Color(0xFFFFB74D)
+                                LogLevel.INFO -> NeonCyan
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Text(
+                                    text = "[${entry.level.name}]",
+                                    color = badgeColor,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "${entry.tag}: ${entry.message}",
+                                    color = TextPrimary,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))

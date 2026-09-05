@@ -258,7 +258,7 @@ class TaskExecutor(
                         delay(900)
 
                         // 3. Click the matched contact result - CHECK that the click actually landed.
-                        val contactClicked = service.clickNodeByText(contactName)
+                        val contactClicked = service.clickNodeByTextStrict(contactName)
                         if (!contactClicked) {
                             Log.e("TaskExecutor", "WhatsApp: could not find/click contact '$contactName' in search results")
                             return false
@@ -288,7 +288,8 @@ class TaskExecutor(
                         delay(500)
 
                         // 5. Click Send
-                        val sendClicked = service.clickNodeByText("Send") ||
+                        val sendClicked = service.clickNodeByTextStrict("Send") ||
+                                service.clickNodeByText("Send") ||
                                 service.clickNodeByText("भेजें") ||
                                 service.clickNodeByText("send")
                         if (!sendClicked) {
@@ -372,7 +373,7 @@ class TaskExecutor(
                     val text = step.params["text"] ?: ""
                     val service = JarvisAccessibilityService.instance
                     if (service != null && text.isNotBlank()) {
-                        service.clickNodeByText(text)
+                        service.clickNodeByTextStrict(text) || service.clickNodeByText(text)
                     } else true
                 }
 

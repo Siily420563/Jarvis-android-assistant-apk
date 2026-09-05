@@ -513,4 +513,38 @@ class JarvisAccessibilityService : AccessibilityService() {
             onResult(null)
         }
     }
+
+    fun clickNodeByTextStrict(targetText: String): Boolean {
+        val target = targetText.trim()
+        if (target.isBlank()) return false
+        val nodes = dumpScreenHierarchy()
+
+        val exact = nodes.firstOrNull {
+            it.text.equals(target, ignoreCase = true) ||
+            it.contentDescription.equals(target, ignoreCase = true)
+        }
+        if (exact != null && !exact.bounds.isEmpty) {
+            return clickCoordinates(exact.bounds.centerX().toFloat(), exact.bounds.centerY().toFloat())
+        }
+
+        val starts = nodes.firstOrNull {
+            it.text.startsWith(target, ignoreCase = true) ||
+            it.contentDescription.startsWith(target, ignoreCase = true)
+        }
+        if (starts != null && !starts.bounds.isEmpty) {
+            return clickCoordinates(starts.bounds.centerX().toFloat(), starts.bounds.centerY().toFloat())
+        }
+
+        return clickNodeByText(target, ignoreCase = true)
+    }
+
+    fun isTextVisible(target: String): Boolean {
+        val t = target.trim()
+        if (t.isBlank()) return false
+        return dumpScreenHierarchy().any {
+            it.text.contains(t, ignoreCase = true) ||
+            it.contentDescription.contains(t, ignoreCase = true) ||
+            it.viewId.contains(t, ignoreCase = true)
+        }
+    }
 }

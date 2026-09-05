@@ -33,6 +33,11 @@ fun MacrosScreen(
     onNavigateToHome: () -> Unit
 ) {
     val macros by viewModel.cachedMacros.collectAsState(initial = emptyList())
+    val isRecording by viewModel.isMacroRecording.collectAsState()
+    var macroNameInput by remember { mutableStateOf("") }
+    var tapLabelInput by remember { mutableStateOf("Target Button") }
+    var tapXInput by remember { mutableStateOf("500") }
+    var tapYInput by remember { mutableStateOf("1000") }
 
     Column(
         modifier = Modifier
@@ -97,6 +102,144 @@ fun MacrosScreen(
                     fontSize = 12.sp,
                     lineHeight = 17.sp
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Teach-by-Demo (Macro v2) Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CyberCardBg),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(if (isRecording) SaraPink else CyberCardBorder)
+            ),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "TEACH-BY-DEMO MACRO V2",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Text(
+                            text = if (isRecording) "RECORDING IN PROGRESS..." else "Record gestures & taps to replay instantly",
+                            color = if (isRecording) SaraPink else TextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = if (isRecording) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            if (isRecording) {
+                                viewModel.stopMacroRecordingAndSave(macroNameInput)
+                                macroNameInput = ""
+                            } else {
+                                viewModel.startMacroRecording()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isRecording) Color(0xFFE53935) else NeonCyan
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = if (isRecording) "STOP & SAVE" else "START RECORD",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isRecording) Color.White else CyberBg
+                        )
+                    }
+                }
+
+                if (isRecording) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = macroNameInput,
+                        onValueChange = { macroNameInput = it },
+                        label = { Text("Macro Name (e.g. Open Telegram Chat)", fontSize = 11.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = SaraPink,
+                            unfocusedBorderColor = CyberCardBorder,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = tapLabelInput,
+                            onValueChange = { tapLabelInput = it },
+                            label = { Text("Tap Label", fontSize = 10.sp) },
+                            modifier = Modifier.weight(2f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = CyberCardBorder,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            )
+                        )
+                        OutlinedTextField(
+                            value = tapXInput,
+                            onValueChange = { tapXInput = it },
+                            label = { Text("X", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = CyberCardBorder,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            )
+                        )
+                        OutlinedTextField(
+                            value = tapYInput,
+                            onValueChange = { tapYInput = it },
+                            label = { Text("Y", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = CyberCardBorder,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            )
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val x = tapXInput.toFloatOrNull() ?: 500f
+                            val y = tapYInput.toFloatOrNull() ?: 1000f
+                            viewModel.recordManualTap(tapLabelInput, x, y)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ElegantPurple),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "+ ADD DEMO TAP POINT",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
             }
         }
 

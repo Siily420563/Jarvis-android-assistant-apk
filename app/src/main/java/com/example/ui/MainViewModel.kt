@@ -35,6 +35,8 @@ import com.example.persona.PersonaType
 import com.example.service.JarvisAccessibilityService
 import com.example.service.JarvisFloatingBubbleService
 import com.example.util.DeviceActionHelper
+import com.example.debug.SystemLogBus
+import com.example.debug.SystemLogEntry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val userMemories = db.jarvisDao().getAllMemories()
     val jarvisAlarms = db.jarvisDao().getAllAlarms()
     val cachedMacros = db.jarvisDao().getAllMacros()
+    val systemLogs: StateFlow<List<SystemLogEntry>> = SystemLogBus.logs
 
     private val _recognizedText = MutableStateFlow("")
     val recognizedText: StateFlow<String> = _recognizedText.asStateFlow()
@@ -535,6 +538,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     plan.speechResponseHinglish
                 }
                 _saraResponse.value = displayText
+                if (plan.usedFallback) {
+                    SystemLogBus.w("MainViewModel", "Fallback: ${plan.fallbackReason}")
+                }
 
                 db.jarvisDao().insertLog(InteractionLog(text = displayText, isUser = false))
 
@@ -554,6 +560,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.onFailure { err ->
                 val errorHinglish = "Kuch issue hua: ${err.message ?: "Connection error"}. Kya aap dobara bol sakte hain?"
                 _saraResponse.value = errorHinglish
+                SystemLogBus.e("MainViewModel", "Command failed: ${err.message ?: "unknown"}")
                 speakAndPromptNext(errorHinglish)
             }
         }
@@ -666,12 +673,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferredLlm: String,
         assistantName: String,
         persona: PersonaType,
-        geminiModel: String = "gemini-3.7-flash",
+        geminiModel: String = "gemini-3.8-flash",
         groqModel: String = "llama-3.3-70b-versatile",
-        openRouterModel: String = "anthropic/claude-3.7-sonnet",
+        openRouterModel: String = "anthropic/claude-sonnet-4.6",
         openAiKey: String = "",
         openAiBaseUrl: String = "https://api.openai.com/v1",
-        openAiModel: String = "gpt-4o-mini",
+        openAiModel: String = "gpt-4.1-mini",
         protectedApps: Set<String> = emptySet(),
         maxAgentSteps: Int = 25,
         confirmRiskyActions: Boolean = true,
@@ -682,10 +689,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.openRouterApiKey = openRouterKey.trim()
         prefs.openAiApiKey = openAiKey.trim()
         prefs.openAiBaseUrl = openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" }
-        prefs.openAiModel = openAiModel.trim().ifBlank { "gpt-4o-mini" }
-        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.7-flash" }
+        prefs.openAiModel = openAiModel.trim().ifBlank { "gpt-4.1-mini" }
+        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.8-flash" }
         prefs.groqModel = groqModel.trim().ifBlank { "llama-3.3-70b-versatile" }
-        prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-3.7-sonnet" }
+        prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-sonnet-4.6" }
         prefs.preferredLlm = preferredLlm
         prefs.assistantName = assistantName.trim().ifBlank { "SARA" }
         prefs.activePersona = persona
@@ -816,6 +823,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             db.jarvisDao().deleteMacro(macro)
         }
+    }
+
+    private val recordingActions = mutableListOf<TaskStep>()
+    private val _isMacroRecording = MutableStateFlow(false)
+    val isMacroRecording: StateFlow<Boolean> = _isMacroRecording.asStateFlow()
+
+    fun startMacroRecording() {
+        recordingActions.clear()
+        _isMacroRecording.value = true
+        SystemLogBus.i("Macro", "Macro recording started")
+    }
+
+    fun recordManualTap(label: String, x: Float, y: Float) {
+        if (!_isMacroRecording.value) return
+        recordingActions.add(
+            TaskStep(
+                id = "rec_${System.currentTimeMillis()}",
+                type = StepType.ACCESSIBILITY_TAP_COORDS,
+                params = mapOf("x" to x.toString(), "y" to y.toString(), "label" to label),
+                descriptionHinglish = "Demo tap: $label"
+            )
+        )
+    }
+
+    fun stopMacroRecordingAndSave(name: String) {
+        if (!_isMacroRecording.value) return
+        _isMacroRecording.value = false
+        val macroName = name.ifBlank { "Demo Macro ${System.currentTimeMillis()}" }
+        val plan = TaskPlan(
+            originalQuery = macroName,
+            intentKey = "DEMO_" + macroName.uppercase().replace(" ", "_"),
+            steps = recordingActions.toList(),
+            speechResponseHinglish = "Demo macro execute kar rahi hoon."
+        )
+        viewModelScope.launch {
+            db.jarvisDao().insertMacro(
+                MacroCache(
+                    intentKey = plan.intentKey,
+                    taskDescription = macroName,
+                    taskGraphJson = plan.toJsonString(),
+                    executionCount = 0
+                )
+            )
+        }
+        SystemLogBus.i("Macro", "Macro saved: $macroName with ${recordingActions.size} steps")
     }
 
     override fun onCleared() {

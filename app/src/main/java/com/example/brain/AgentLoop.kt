@@ -12,6 +12,7 @@ import com.example.engine.LlmEngine
 import com.example.perception.ScreenState
 import com.example.safety.SafetyPolicy
 import com.example.service.JarvisAccessibilityService
+import com.example.debug.SystemLogBus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -162,6 +163,7 @@ class AgentLoop(
 
             val historyEntry = "Step $currentStep: Executed ${step.action.javaClass.simpleName} -> ${result.message}. Expected: '${step.expect}'. Current foreground: ${newScreenState.packageName}"
             actionHistory.add(historyEntry)
+            SystemLogBus.i("AgentLoop", historyEntry)
 
             // Log interaction
             try {

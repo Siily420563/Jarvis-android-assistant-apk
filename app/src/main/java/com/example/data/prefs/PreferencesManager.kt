@@ -38,7 +38,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("gemini_api_key", value).apply()
 
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+        get() = prefs.getString("gemini_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var groqApiKey: String
@@ -54,7 +54,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("open_router_key", value).apply()
 
     var openRouterModel: String
-        get() = prefs.getString("open_router_model", "anthropic/claude-3.7-sonnet") ?: "anthropic/claude-3.7-sonnet"
+        get() = prefs.getString("open_router_model", "anthropic/claude-sonnet-4.6") ?: "anthropic/claude-sonnet-4.6"
         set(value) = prefs.edit().putString("open_router_model", value).apply()
 
     var preferredLlm: String
@@ -73,6 +73,10 @@ class PreferencesManager(context: Context) {
         get() = prefs.getInt("max_agent_steps", 25)
         set(value) = prefs.edit().putInt("max_agent_steps", value.coerceIn(5, 50)).apply()
 
+    var maxLlmCallsPerCommand: Int
+        get() = prefs.getInt("max_llm_calls_per_command", 3)
+        set(value) = prefs.edit().putInt("max_llm_calls_per_command", value.coerceIn(1, 8)).apply()
+
     var verboseVoiceFeedback: Boolean
         get() = prefs.getBoolean("verbose_voice_feedback", true)
         set(value) = prefs.edit().putBoolean("verbose_voice_feedback", value).apply()
@@ -90,7 +94,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("openai_base_url", value).apply()
 
     var openAiModel: String
-        get() = prefs.getString("openai_model", "gpt-4o-mini") ?: "gpt-4o-mini"
+        get() = prefs.getString("openai_model", "gpt-4.1-mini") ?: "gpt-4.1-mini"
         set(value) = prefs.edit().putString("openai_model", value).apply()
 
     fun hasAnyApiKey(): Boolean {

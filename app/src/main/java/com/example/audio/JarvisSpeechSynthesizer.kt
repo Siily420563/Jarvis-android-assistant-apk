@@ -1,10 +1,6 @@
 package com.example.audio
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
@@ -13,464 +9,333 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.util.Log
+import com.example.debug.SystemLogBus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class JarvisSpeechSynthesizer(private val context: Context) {
-
     companion object {
-        @Volatile
-        var instance: JarvisSpeechSynthesizer? = null
+        @Volatile var instance: JarvisSpeechSynthesizer? = null
             private set
     }
 
-    private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.IO + Job())
-
-    private var androidTts: TextToSpeech? = null
-    @Volatile
-    private var isTtsReady = false
-
-    init {
-        instance = this
-        initAndroidTts()
-    }
-
-    private fun initAndroidTts() {
-        androidTts = TextToSpeech(context.applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val hiLocale = Locale("hi", "IN")
-                val res = androidTts?.setLanguage(hiLocale)
-                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    androidTts?.setLanguage(Locale("en", "IN"))
-                }
-                isTtsReady = true
-                Log.i("SaraVoice", "Android TextToSpeech engine initialized (hi-IN / fallback en-IN)")
-            } else {
-                Log.w("SaraVoice", "Android TextToSpeech initialization failed with status $status")
-            }
-        }
-    }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-
     private var mediaPlayer: MediaPlayer? = null
-    private var audioTrack: AudioTrack? = null
-    private var isAudioPlaying = false
+    private var emergencyTts: TextToSpeech? = null
+    @Volatile private var emergencyReady = false
+    @Volatile private var isAudioPlaying = false
+    @Volatile private var currentJob: Job? = null
 
-    @Volatile
-    private var currentSpeakJob: Job? = null
+    private val streamQueue = ArrayDeque<String>()
+    private var streamCallback: (() -> Unit)? = null
 
-    fun speakLocal(text: String, onComplete: (() -> Unit)? = null) {
-        val cleanText = cleanTextForSpeech(text)
-        if (cleanText.isBlank()) {
-            mainHandler.post { onComplete?.invoke() }
-            return
-        }
+    init {
+        instance = this
+        initEmergencyLocalTts()
+    }
 
-        stop()
-        mainHandler.post {
-            val ttsEngine = androidTts
-            if (ttsEngine != null && isTtsReady) {
-                val utteranceId = "tts_${System.currentTimeMillis()}"
-                ttsEngine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(id: String?) {
-                        isAudioPlaying = true
-                    }
-
-                    override fun onDone(id: String?) {
-                        isAudioPlaying = false
-                        mainHandler.post { onComplete?.invoke() }
-                    }
-
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(id: String?) {
-                        isAudioPlaying = false
-                        mainHandler.post { onComplete?.invoke() }
-                    }
-
-                    override fun onError(id: String?, errorCode: Int) {
-                        isAudioPlaying = false
-                        mainHandler.post { onComplete?.invoke() }
-                    }
-                })
-                val params = Bundle().apply {
-                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                }
-                isAudioPlaying = true
-                ttsEngine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
-            } else {
-                Log.w("SaraVoice", "Android TTS not ready")
-                mainHandler.post { onComplete?.invoke() }
+    private fun initEmergencyLocalTts() {
+        emergencyTts = TextToSpeech(context.applicationContext) { status ->
+            emergencyReady = status == TextToSpeech.SUCCESS
+            if (emergencyReady) {
+                emergencyTts?.setLanguage(Locale("en", "IN"))
             }
         }
     }
 
-    /**
-     * Speak text using Android TTS or Cloud AI TTS.
-     * Uses Android TTS:
-     * (a) always for texts shorter than 6 words
-     * (b) whenever cloud TTS fails, times out after 3 seconds, or no API key exists.
-     */
+    fun speakLocal(text: String, onComplete: (() -> Unit)? = null) {
+        val clean = cleanTextForSpeech(text)
+        if (clean.isBlank()) {
+            mainHandler.post { onComplete?.invoke() }
+            return
+        }
+        val tts = emergencyTts
+        if (!emergencyReady || tts == null) {
+            mainHandler.post { onComplete?.invoke() }
+            return
+        }
+        val id = "local_${System.currentTimeMillis()}"
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) { isAudioPlaying = true }
+            override fun onDone(utteranceId: String?) {
+                isAudioPlaying = false
+                mainHandler.post { onComplete?.invoke() }
+            }
+            override fun onError(utteranceId: String?) {
+                isAudioPlaying = false
+                mainHandler.post { onComplete?.invoke() }
+            }
+        })
+        val args = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id) }
+        tts.speak(clean, TextToSpeech.QUEUE_FLUSH, args, id)
+    }
+
     fun speak(
         text: String,
         apiKey: String? = null,
         groqApiKey: String? = null,
         onComplete: (() -> Unit)? = null
     ) {
-        val cleanText = cleanTextForSpeech(text)
-        if (cleanText.isBlank()) {
+        val clean = cleanTextForSpeech(text)
+        if (clean.isBlank()) {
             mainHandler.post { onComplete?.invoke() }
             return
         }
 
-        val words = cleanText.split(Regex("\\s+")).filter { it.isNotBlank() }
-        // (a) Always for texts shorter than 6 words
-        if (words.size < 6) {
-            Log.i("SaraVoice", "Text shorter than 6 words (${words.size} words). Using local Android TTS.")
-            speakLocal(cleanText, onComplete)
-            return
+        // Chunking lets speech start early and keeps latency lower than waiting giant text.
+        val chunks = clean.chunkedByWords(9)
+        synchronized(streamQueue) {
+            chunks.forEach { streamQueue.addLast(it) }
+            streamCallback = onComplete
         }
-
-        val key = apiKey?.ifBlank { null } ?: getBuildConfigGeminiKey()
-
-        // (b) Whenever no API key exists
-        if (key.isBlank() && groqApiKey.isNullOrBlank()) {
-            Log.i("SaraVoice", "No API key available for cloud TTS. Using local Android TTS.")
-            speakLocal(cleanText, onComplete)
-            return
+        if (currentJob?.isActive != true) {
+            currentJob = scope.launch {
+                processQueue(apiKey, groqApiKey)
+            }
         }
+    }
 
-        stop()
+    // For future real token streaming integration: call this on each partial delta token/chunk.
+    fun speakStreamDelta(deltaText: String, apiKey: String? = null, groqApiKey: String? = null) {
+        val clean = cleanTextForSpeech(deltaText)
+        if (clean.isBlank()) return
+        synchronized(streamQueue) {
+            streamQueue.addLast(clean)
+        }
+        if (currentJob?.isActive != true) {
+            currentJob = scope.launch { processQueue(apiKey, groqApiKey) }
+        }
+    }
 
-        currentSpeakJob = scope.launch {
-            var audioBytes: ByteArray? = null
-            var mimeType: String? = null
+    private suspend fun processQueue(apiKey: String?, groqApiKey: String?) {
+        while (true) {
+            val next = synchronized(streamQueue) { if (streamQueue.isEmpty()) null else streamQueue.removeFirst() } ?: break
+            val spoken = speakWithCloud(next, apiKey, groqApiKey)
+            if (!spoken) {
+                SystemLogBus.w("SaraVoice", "Cloud TTS failed for chunk, using emergency local")
+                speakLocalSuspend(next)
+            }
+        }
+        val cb = synchronized(streamQueue) {
+            if (streamQueue.isEmpty()) {
+                val done = streamCallback
+                streamCallback = null
+                done
+            } else null
+        }
+        cb?.let { mainHandler.post { it.invoke() } }
+    }
 
-            // (b) Whenever cloud TTS fails or times out after 3 seconds
-            val cloudResult = withTimeoutOrNull(3000L) {
-                // 1. Primary: Gemini TTS (with 2 retry attempts)
-                if (!key.isNullOrBlank()) {
-                    for (attempt in 1..2) {
-                        try {
-                            val result = fetchGeminiTts(cleanText, key)
-                            if (result != null) {
-                                return@withTimeoutOrNull result
-                            }
-                        } catch (e: Exception) {
-                            Log.w("SaraVoice", "Gemini TTS attempt $attempt failed: ${e.message}")
-                            delay(300)
-                        }
-                    }
-                }
+    private suspend fun speakWithCloud(text: String, apiKey: String?, groqApiKey: String?): Boolean {
+        val geminiKey = apiKey?.trim().orEmpty()
+        val groqKey = groqApiKey?.trim().orEmpty()
 
-                // 2. Fallback: Groq TTS if Gemini failed and Groq key is present
-                if (!groqApiKey.isNullOrBlank()) {
-                    for (attempt in 1..2) {
-                        try {
-                            val result = fetchGroqTts(cleanText, groqApiKey)
-                            if (result != null) {
-                                return@withTimeoutOrNull result
-                            }
-                        } catch (e: Exception) {
-                            Log.w("SaraVoice", "Groq TTS attempt $attempt failed: ${e.message}")
-                            delay(300)
-                        }
+        if (geminiKey.isNotBlank()) {
+            val audio = fetchGeminiTts(text, geminiKey)
+            if (audio != null) {
+                return playAudioBytesSuspend(audio.first, audio.second)
+            }
+        }
+        if (groqKey.isNotBlank()) {
+            val audio = fetchGroqTts(text, groqKey)
+            if (audio != null) {
+                return playAudioBytesSuspend(audio.first, audio.second)
+            }
+        }
+        return false
+    }
+
+    private suspend fun fetchGeminiTts(text: String, apiKey: String): Pair<ByteArray, String>? {
+        return try {
+            val model = "gemini-3.1-flash-tts"
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+            val body = JSONObject().apply {
+                put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", text)))))
+                put("generationConfig", JSONObject().apply {
+                    put("responseModalities", JSONArray().put("AUDIO"))
+                    put("speechConfig", JSONObject().put("voiceConfig", JSONObject().put("prebuiltVoiceConfig", JSONObject().put("voiceName", "Kore"))))
+                })
+            }
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("Content-Type", "application/json")
+                .post(body.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val parts = root.optJSONArray("candidates")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("content")
+                    ?.optJSONArray("parts") ?: return null
+
+                for (i in 0 until parts.length()) {
+                    val p = parts.optJSONObject(i) ?: continue
+                    if (p.has("inlineData")) {
+                        val inline = p.getJSONObject("inlineData")
+                        val mime = inline.optString("mimeType", "audio/wav")
+                        val b64 = inline.optString("data", "")
+                        if (b64.isNotBlank()) return Pair(Base64.decode(b64, Base64.DEFAULT), mime)
                     }
                 }
                 null
             }
-
-            if (cloudResult != null) {
-                audioBytes = cloudResult.first
-                mimeType = cloudResult.second
-            }
-
-            // 3. Play audio if fetched, otherwise local Android TTS fallback
-            if (audioBytes != null && audioBytes.isNotEmpty()) {
-                playAudioBytes(audioBytes, mimeType ?: "audio/wav", onComplete)
-            } else {
-                Log.i("SaraVoice", "Cloud TTS failed or timed out after 3s. Falling back to local Android TTS.")
-                speakLocal(cleanText, onComplete)
-            }
-        }
-    }
-
-    private suspend fun fetchGeminiTts(text: String, apiKey: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
-        try {
-            val modelsToTry = listOf("gemini-3.1-flash-tts-preview")
-            for (model in modelsToTry) {
-                try {
-                    val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-
-                    val jsonBody = JSONObject().apply {
-                        put("contents", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("parts", JSONArray().apply {
-                                    put(JSONObject().apply {
-                                        put("text", text)
-                                    })
-                                })
-                            })
-                        })
-                        put("generationConfig", JSONObject().apply {
-                            put("responseModalities", JSONArray().apply {
-                                put("AUDIO")
-                            })
-                            put("speechConfig", JSONObject().apply {
-                                put("voiceConfig", JSONObject().apply {
-                                    put("prebuiltVoiceConfig", JSONObject().apply {
-                                        put("voiceName", "Kore") // Friendly & warm persona voice
-                                    })
-                                })
-                            })
-                        })
-                    }
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .addHeader("Content-Type", "application/json")
-                        .post(jsonBody.toString().toRequestBody(jsonMediaType))
-                        .build()
-
-                    val response = httpClient.newCall(request).execute()
-                    if (response.isSuccessful) {
-                        val bodyStr = response.body?.string() ?: continue
-                        val respJson = JSONObject(bodyStr)
-                        val candidates = respJson.optJSONArray("candidates")
-                        if (candidates != null && candidates.length() > 0) {
-                            val parts = candidates.getJSONObject(0)
-                                .getJSONObject("content")
-                                .getJSONArray("parts")
-
-                            for (i in 0 until parts.length()) {
-                                val part = parts.getJSONObject(i)
-                                if (part.has("inlineData")) {
-                                    val inline = part.getJSONObject("inlineData")
-                                    val mime = inline.optString("mimeType", "audio/wav")
-                                    val dataBase64 = inline.optString("data", "")
-                                    if (dataBase64.isNotBlank()) {
-                                        val bytes = Base64.decode(dataBase64, Base64.DEFAULT)
-                                        return@withContext Pair(bytes, mime)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Log.w("SaraVoice", "Gemini TTS returned status ${response.code}")
-                    }
-                } catch (e: Exception) {
-                    Log.w("SaraVoice", "Model $model failed: ${e.message}")
-                }
-            }
         } catch (e: Exception) {
-            Log.e("SaraVoice", "fetchGeminiTts failed", e)
+            Log.w("SaraVoice", "Gemini TTS failed: ${e.message}")
+            null
         }
-        return@withContext null
     }
 
-    private suspend fun fetchGroqTts(text: String, apiKey: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
-        try {
+    private suspend fun fetchGroqTts(text: String, apiKey: String): Pair<ByteArray, String>? {
+        return try {
             val url = "https://api.groq.com/openai/v1/audio/speech"
-            val jsonBody = JSONObject().apply {
+            val body = JSONObject().apply {
                 put("model", "playai-tts")
                 put("input", text)
                 put("voice", "nova")
                 put("response_format", "mp3")
             }
-
-            val request = Request.Builder()
+            val req = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
-                .post(jsonBody.toString().toRequestBody(jsonMediaType))
+                .post(body.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val bytes = response.body?.bytes()
-                if (bytes != null && bytes.isNotEmpty()) {
-                    return@withContext Pair(bytes, "audio/mp3")
-                }
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val bytes = resp.body?.bytes() ?: return null
+                if (bytes.isEmpty()) null else Pair(bytes, "audio/mp3")
             }
         } catch (e: Exception) {
             Log.w("SaraVoice", "Groq TTS failed: ${e.message}")
+            null
         }
-        return@withContext null
     }
 
-    private fun playAudioBytes(bytes: ByteArray, mimeType: String, onComplete: (() -> Unit)?) {
-        try {
+    private suspend fun playAudioBytesSuspend(bytes: ByteArray, mimeType: String): Boolean {
+        return try {
             stop()
             isAudioPlaying = true
+            val ext = if (mimeType.contains("mp3", true)) "mp3" else "wav"
+            val tmp = File(context.cacheDir, "sara_tts_${System.currentTimeMillis()}.$ext")
+            FileOutputStream(tmp).use { it.write(bytes) }
 
-            // If raw PCM (often 24000Hz 16-bit mono from Gemini audio), play via AudioTrack or wrap in WAV header
-            val playableBytes = if (mimeType.contains("pcm", ignoreCase = true) || !hasWavOrMp3Header(bytes)) {
-                wrapPcmWithWavHeader(bytes, 24000, 1, 16)
-            } else {
-                bytes
+            val done = Object()
+            var ok = true
+
+            mainHandler.post {
+                try {
+                    val mp = MediaPlayer().apply {
+                        setDataSource(tmp.absolutePath)
+                        setOnCompletionListener {
+                            synchronized(done) {
+                                isAudioPlaying = false
+                                try { tmp.delete() } catch (_: Exception) {}
+                                done.notify()
+                            }
+                        }
+                        setOnErrorListener { _, _, _ ->
+                            synchronized(done) {
+                                isAudioPlaying = false
+                                ok = false
+                                try { tmp.delete() } catch (_: Exception) {}
+                                done.notify()
+                            }
+                            true
+                        }
+                        prepare()
+                        start()
+                    }
+                    mediaPlayer = mp
+                } catch (_: Exception) {
+                    synchronized(done) {
+                        ok = false
+                        isAudioPlaying = false
+                        try { tmp.delete() } catch (_: Exception) {}
+                        done.notify()
+                    }
+                }
             }
 
-            val tempFile = File(context.cacheDir, "sara_ai_speech_${System.currentTimeMillis()}.wav")
-            FileOutputStream(tempFile).use { it.write(playableBytes) }
-
-            val mp = MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
-                setOnCompletionListener {
-                    this@JarvisSpeechSynthesizer.isAudioPlaying = false
-                    try { tempFile.delete() } catch (e: Exception) {}
-                    mainHandler.post { onComplete?.invoke() }
-                }
-                setOnErrorListener { _, _, _ ->
-                    this@JarvisSpeechSynthesizer.isAudioPlaying = false
-                    try { tempFile.delete() } catch (e: Exception) {}
-                    mainHandler.post { onComplete?.invoke() }
-                    true
-                }
-                prepare()
-                start()
-            }
-            mediaPlayer = mp
-        } catch (e: Exception) {
-            Log.e("SaraVoice", "Failed to play audio bytes", e)
+            synchronized(done) { done.wait(12_000L) }
+            ok
+        } catch (_: Exception) {
             isAudioPlaying = false
-            mainHandler.post { onComplete?.invoke() }
+            false
         }
     }
 
-    private fun hasWavOrMp3Header(bytes: ByteArray): Boolean {
-        if (bytes.size < 12) return false
-        val isRiff = bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()
-        val isId3 = bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() && bytes[2] == '3'.code.toByte()
-        val isMp3Sync = (bytes[0].toInt() and 0xFF) == 0xFF && ((bytes[1].toInt() and 0xE0) == 0xE0)
-        return isRiff || isId3 || isMp3Sync
-    }
-
-    private fun wrapPcmWithWavHeader(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
-        val totalAudioLen = pcmData.size
-        val totalDataLen = totalAudioLen + 36
-        val byteRate = sampleRate * channels * bitsPerSample / 8
-        val blockAlign = channels * bitsPerSample / 8
-
-        val header = ByteArray(44)
-        header[0] = 'R'.code.toByte(); header[1] = 'I'.code.toByte(); header[2] = 'F'.code.toByte(); header[3] = 'F'.code.toByte()
-        header[4] = (totalDataLen and 0xff).toByte()
-        header[5] = ((totalDataLen shr 8) and 0xff).toByte()
-        header[6] = ((totalDataLen shr 16) and 0xff).toByte()
-        header[7] = ((totalDataLen shr 24) and 0xff).toByte()
-        header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte(); header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
-        header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte(); header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
-        header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0
-        header[20] = 1; header[21] = 0
-        header[22] = channels.toByte(); header[23] = 0
-        header[24] = (sampleRate and 0xff).toByte()
-        header[25] = ((sampleRate shr 8) and 0xff).toByte()
-        header[26] = ((sampleRate shr 16) and 0xff).toByte()
-        header[27] = ((sampleRate shr 24) and 0xff).toByte()
-        header[28] = (byteRate and 0xff).toByte()
-        header[29] = ((byteRate shr 8) and 0xff).toByte()
-        header[30] = ((byteRate shr 16) and 0xff).toByte()
-        header[31] = ((byteRate shr 24) and 0xff).toByte()
-        header[32] = blockAlign.toByte(); header[33] = 0
-        header[34] = bitsPerSample.toByte(); header[35] = 0
-        header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
-        header[40] = (totalAudioLen and 0xff).toByte()
-        header[41] = ((totalAudioLen shr 8) and 0xff).toByte()
-        header[42] = ((totalAudioLen shr 16) and 0xff).toByte()
-        header[43] = ((totalAudioLen shr 24) and 0xff).toByte()
-
-        val output = ByteArray(44 + pcmData.size)
-        System.arraycopy(header, 0, output, 0, 44)
-        System.arraycopy(pcmData, 0, output, 44, pcmData.size)
-        return output
-    }
-
-    private fun getBuildConfigGeminiKey(): String {
-        return try {
-            val field = com.example.BuildConfig::class.java.getField("GEMINI_API_KEY")
-            val value = field.get(null) as? String ?: ""
-            if (value.isNotBlank() && value != "null" && value != "MY_GEMINI_API_KEY") value else ""
-        } catch (e: Throwable) {
-            ""
+    private suspend fun speakLocalSuspend(text: String) {
+        val done = Object()
+        mainHandler.post {
+            speakLocal(text) { synchronized(done) { done.notify() } }
         }
+        synchronized(done) { done.wait(4_000L) }
     }
 
     fun stop() {
-        try {
-            currentSpeakJob?.cancel()
-            currentSpeakJob = null
-            androidTts?.stop()
-            mediaPlayer?.let {
-                if (it.isPlaying) {
-                    it.stop()
-                }
-                it.release()
-            }
-            mediaPlayer = null
-            audioTrack?.let {
-                it.stop()
-                it.release()
-            }
-            audioTrack = null
-            isAudioPlaying = false
-        } catch (e: Exception) {
-            Log.w("SaraVoice", "Error stopping audio: ${e.message}")
+        currentJob?.cancel()
+        currentJob = null
+        synchronized(streamQueue) {
+            streamQueue.clear()
+            streamCallback = null
         }
+        try { mediaPlayer?.stop() } catch (_: Exception) {}
+        try { mediaPlayer?.release() } catch (_: Exception) {}
+        mediaPlayer = null
+        isAudioPlaying = false
     }
 
     fun shutdown() {
         stop()
-        try {
-            androidTts?.shutdown()
-            androidTts = null
-        } catch (e: Exception) {}
-        if (instance == this) {
-            instance = null
-        }
+        try { emergencyTts?.stop() } catch (_: Exception) {}
+        try { emergencyTts?.shutdown() } catch (_: Exception) {}
+        emergencyTts = null
+        emergencyReady = false
+        if (instance == this) instance = null
     }
 
-    private fun cleanTextForSpeech(raw: String): String {
-        return raw
-            .replace(Regex("<action[^>]*/>"), "")
-            .replace(Regex("<action[^>]*>.*?</action>"), "")
-            .replace(Regex("```[a-zA-Z0-9]*"), "")
-            .replace(Regex("```"), "")
-            .replace(Regex("\\{[\\s\\S]*?\\}"), "")
-            .replace(Regex("\\[.*?\\]"), "")
-            .replace("*", "")
-            .replace("#", "")
-            .replace("💕", "")
-            .replace("❤️", "")
-            .replace("✨", "")
-            .replace("🔥", "")
-            .replace("🎤", "")
-            .replace("⚙️", "")
-            .replace("🗣️", "")
-            .replace("⚡", "")
+    private fun cleanTextForSpeech(text: String): String {
+        return text
+            .replace(Regex("<[^>]*>"), " ")
+            .replace(Regex("```[\\s\\S]*?```"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
     }
-}
 
+    private fun String.chunkedByWords(wordsPerChunk: Int): List<String> {
+        val words = this.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < words.size) {
+            val end = (i + wordsPerChunk).coerceAtMost(words.size)
+            out.add(words.subList(i, end).joinToString(" "))
+            i = end
+        }
+        return out
+    }
+}
