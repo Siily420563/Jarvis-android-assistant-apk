@@ -48,6 +48,9 @@ jobs:
         run: |
           if [ -f "./debug.keystore" ]; then
             echo "debug.keystore already exists."
+          elif [ -f "./debug.keystore.base64" ]; then
+            echo "Decoding debug.keystore from base64..."
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
           else
             echo "Generating temporary debug keystore..."
             keytool -genkeypair -v -keystore ./debug.keystore \
@@ -64,13 +67,17 @@ jobs:
 
       - name: Write .env from secrets
         run: |
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
-          echo "PORCUPINE_ACCESS_KEY=${{ secrets.PORCUPINE_ACCESS_KEY }}" >> .env
+          touch .env
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
+          fi
 
       - name: Build debug APK
         env:
           JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
-        run: gradle :app:assembleDebug --stacktrace --no-daemon -Djava.awt.headless=true
+        run: |
+          chmod +x gradlew || true
+          gradle :app:assembleDebug --stacktrace --no-daemon -Djava.awt.headless=true || ./gradlew :app:assembleDebug --stacktrace --no-daemon -Djava.awt.headless=true
 
       - name: Verify debug APK
         run: |
@@ -130,11 +137,7 @@ jobs:
           TAG_NAME="debug-apk-build-${{ github.run_number }}-${{ github.run_attempt }}"
           RELEASE_TITLE="Debug APK Build #${{ github.run_number }}"
           
-          gh release create "$TAG_NAME" "$ASSET_PATH" \
-            --title "$RELEASE_TITLE" \
-            --target "${{ github.sha }}" \
-            --latest \
-            --notes "This is an automatically generated debug APK.
+          NOTES_CONTENT="This is an automatically generated debug APK.
           Built by GitHub Actions.
           
           - Run Number: ${{ github.run_number }}
@@ -143,6 +146,12 @@ jobs:
           
           This APK is intended for testing and is not a Play Store production release.
           It is signed only with a temporary debug keystore."
+
+          gh release create "$TAG_NAME" "$ASSET_PATH" \
+            --title "$RELEASE_TITLE" \
+            --target "${{ github.sha }}" \
+            --latest \
+            --notes "$NOTES_CONTENT"
 
       - name: Report APK download result
         if: always()
