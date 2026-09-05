@@ -38,10 +38,11 @@ jobs:
             exit 1
           fi
 
-      - name: Set up Gradle 9.3.1
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+          cache-disabled: true
 
       - name: Create temporary debug keystore
         run: |
@@ -69,8 +70,7 @@ jobs:
       - name: Build debug APK
         env:
           JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=\"-Xmx4g -Dfile.encoding=UTF-8 -Djava.awt.headless=true\""
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --stacktrace --no-daemon -Djava.awt.headless=true
 
       - name: Verify debug APK
         run: |
