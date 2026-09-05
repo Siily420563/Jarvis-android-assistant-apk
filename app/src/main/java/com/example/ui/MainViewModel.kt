@@ -112,10 +112,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val interruptedTask: StateFlow<InterruptedTaskState?> = _interruptedTask.asStateFlow()
 
     init {
+        migrateLegacyModelSettings()
         checkSystemPermissionsStatus()
         setInitialGreeting()
         llmEngine.onHttp4xxError = { errorText ->
-            _saraResponse.value = "⚠️ $errorText"
+            SystemLogBus.w("MainViewModel", "Provider 4xx: $errorText")
+        }
+    }
+
+    private fun migrateLegacyModelSettings() {
+        val oldOpenRouter = prefs.openRouterModel
+        if (oldOpenRouter.contains("claude-3.7-sonnet", ignoreCase = true) ||
+            oldOpenRouter.contains("claude-3.5-sonnet", ignoreCase = true)
+        ) {
+            prefs.openRouterModel = "openai/gpt-4o-mini"
+            SystemLogBus.w("MainViewModel", "Migrated legacy OpenRouter model to openai/gpt-4o-mini")
+        }
+
+        val oldGroq = prefs.groqModel
+        if (oldGroq.contains("llama-3.3-70b-versatile", ignoreCase = true)) {
+            // kept or auto-fallback to llama-3.1-8b-instant if not found
+        }
+
+        if (prefs.maxLlmCallsPerCommand > 3) {
+            prefs.maxLlmCallsPerCommand = 3
         }
     }
 
@@ -533,7 +553,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // no key configured), say so on screen instead of silently looking like a normal
                 // reply. Speech stays natural — only the visible text gets the warning prefix.
                 val displayText = if (plan.usedFallback) {
-                    "⚠️ [Fallback mode: ${plan.fallbackReason}]\n${plan.speechResponseHinglish}"
+                    if (plan.steps.isNotEmpty()) {
+                        plan.speechResponseHinglish
+                    } else {
+                        "Network issue hai, local mode par chal rahi hoon. " + plan.speechResponseHinglish
+                    }
                 } else {
                     plan.speechResponseHinglish
                 }
@@ -673,9 +697,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferredLlm: String,
         assistantName: String,
         persona: PersonaType,
-        geminiModel: String = "gemini-3.8-flash",
-        groqModel: String = "llama-3.3-70b-versatile",
-        openRouterModel: String = "anthropic/claude-sonnet-4.6",
+        geminiModel: String = "gemini-3.5-flash",
+        groqModel: String = "llama-3.1-8b-instant",
+        openRouterModel: String = "openai/gpt-4o-mini",
         openAiKey: String = "",
         openAiBaseUrl: String = "https://api.openai.com/v1",
         openAiModel: String = "gpt-4.1-mini",
@@ -690,9 +714,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.openAiApiKey = openAiKey.trim()
         prefs.openAiBaseUrl = openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" }
         prefs.openAiModel = openAiModel.trim().ifBlank { "gpt-4.1-mini" }
-        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.8-flash" }
-        prefs.groqModel = groqModel.trim().ifBlank { "llama-3.3-70b-versatile" }
-        prefs.openRouterModel = openRouterModel.trim().ifBlank { "anthropic/claude-sonnet-4.6" }
+        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.5-flash" }
+        prefs.groqModel = groqModel.trim().ifBlank { "llama-3.1-8b-instant" }
+        prefs.openRouterModel = openRouterModel.trim().ifBlank { "openai/gpt-4o-mini" }
         prefs.preferredLlm = preferredLlm
         prefs.assistantName = assistantName.trim().ifBlank { "SARA" }
         prefs.activePersona = persona

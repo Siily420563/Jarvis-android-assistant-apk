@@ -38,7 +38,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("gemini_api_key", value).apply()
 
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
+        get() = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var groqApiKey: String
@@ -46,7 +46,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("groq_api_key", value).apply()
 
     var groqModel: String
-        get() = prefs.getString("groq_model", "llama-3.3-70b-versatile") ?: "llama-3.3-70b-versatile"
+        get() = prefs.getString("groq_model", "llama-3.1-8b-instant") ?: "llama-3.1-8b-instant"
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openRouterApiKey: String
@@ -54,7 +54,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("open_router_key", value).apply()
 
     var openRouterModel: String
-        get() = prefs.getString("open_router_model", "anthropic/claude-sonnet-4.6") ?: "anthropic/claude-sonnet-4.6"
+        get() = prefs.getString("open_router_model", "openai/gpt-4o-mini") ?: "openai/gpt-4o-mini"
         set(value) = prefs.edit().putString("open_router_model", value).apply()
 
     var preferredLlm: String

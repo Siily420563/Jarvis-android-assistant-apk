@@ -425,8 +425,9 @@ fun BrainScreen(viewModel: MainViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val groqModels = listOf(
+                        "llama-3.1-8b-instant" to "llama-3.1-8b (Fast & Free)",
                         "llama-3.3-70b-versatile" to "llama-3.3-70b (Smartest)",
-                        "deepseek-r1-distill-llama-70b" to "deepseek-r1-70b (Reasoning)"
+                        "deepseek-r1-distill-llama-70b" to "deepseek-r1-70b"
                     )
                     groqModels.forEach { (id, label) ->
                         FilterChip(
@@ -503,9 +504,9 @@ fun BrainScreen(viewModel: MainViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val openRouterModels = listOf(
-                        "anthropic/claude-3.7-sonnet" to "Claude 3.7 Sonnet (Smartest)",
-                        "deepseek/deepseek-r1" to "DeepSeek R1",
-                        "meta-llama/llama-3.3-70b-instruct" to "Llama 3.3 70B"
+                        "openai/gpt-4o-mini" to "GPT-4o Mini (Default)",
+                        "meta-llama/llama-3.3-70b-instruct" to "Llama 3.3 70B",
+                        "deepseek/deepseek-r1" to "DeepSeek R1"
                     )
                     openRouterModels.forEach { (id, label) ->
                         FilterChip(
