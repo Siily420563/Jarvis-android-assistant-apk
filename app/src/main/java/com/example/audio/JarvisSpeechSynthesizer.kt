@@ -14,7 +14,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -43,22 +42,23 @@ class JarvisSpeechSynthesizer(private val context: Context) {
         .build()
 
     private var mediaPlayer: MediaPlayer? = null
-    private var emergencyTts: TextToSpeech? = null
-    @Volatile private var emergencyReady = false
-    @Volatile private var cloudTtsCooldownUntil = 0L
+    private var localTts: TextToSpeech? = null
+    @Volatile private var localReady = false
+    @Volatile private var cloudCooldownUntil = 0L
 
     init {
         instance = this
-        initEmergencyTts()
+        initLocal()
     }
 
-    private fun initEmergencyTts() {
-        emergencyTts = TextToSpeech(context.applicationContext) { status ->
-            emergencyReady = status == TextToSpeech.SUCCESS
-            if (emergencyReady) {
-                val res = emergencyTts?.setLanguage(Locale("en", "IN"))
+    private fun initLocal() {
+        localTts = TextToSpeech(context.applicationContext) { status ->
+            localReady = status == TextToSpeech.SUCCESS
+            if (localReady) {
+                val hi = Locale("hi", "IN")
+                val res = localTts?.setLanguage(hi)
                 if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    emergencyTts?.setLanguage(Locale.US)
+                    localTts?.setLanguage(Locale("en", "IN"))
                 }
             }
         }
@@ -70,84 +70,72 @@ class JarvisSpeechSynthesizer(private val context: Context) {
             mainHandler.post { onComplete?.invoke() }
             return
         }
-
-        val tts = emergencyTts
-        if (!emergencyReady || tts == null) {
+        val tts = localTts
+        if (!localReady || tts == null) {
             mainHandler.post { onComplete?.invoke() }
             return
         }
 
-        val utteranceId = "local_${System.currentTimeMillis()}"
+        val id = "local_${System.currentTimeMillis()}"
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) { mainHandler.post { onComplete?.invoke() } }
             override fun onError(utteranceId: String?) { mainHandler.post { onComplete?.invoke() } }
         })
-        val bundle = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId) }
-        tts.speak(clean, TextToSpeech.QUEUE_FLUSH, bundle, utteranceId)
+
+        val args = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id) }
+        tts.speak(clean, TextToSpeech.QUEUE_FLUSH, args, id)
     }
 
-    fun speak(
-        text: String,
-        apiKey: String? = null,
-        groqApiKey: String? = null,
-        onComplete: (() -> Unit)? = null
-    ) {
+    fun speak(text: String, apiKey: String? = null, groqApiKey: String? = null, onComplete: (() -> Unit)? = null) {
         val clean = cleanText(text)
         if (clean.isBlank()) {
             mainHandler.post { onComplete?.invoke() }
             return
         }
 
-        launchSafe {
-            val canTryCloud = System.currentTimeMillis() > cloudTtsCooldownUntil
-            val spokenByCloud = if (canTryCloud) {
-                speakCloudOnce(clean, apiKey.orEmpty(), groqApiKey.orEmpty())
-            } else false
+        scope.launch {
+            val canUseCloud = System.currentTimeMillis() > cloudCooldownUntil
+            val cloudSpoken = if (canUseCloud) tryCloudOnce(clean, apiKey.orEmpty(), groqApiKey.orEmpty()) else false
 
-            if (!spokenByCloud) {
-                // Avoid cloud spam when failing repeatedly
-                if (canTryCloud) {
-                    cloudTtsCooldownUntil = System.currentTimeMillis() + 120_000L
-                    SystemLogBus.w("SaraVoice", "Cloud TTS unavailable, cooldown 120s, using local")
-                }
-                withContext(Dispatchers.Main) {
-                    speakLocal(clean, onComplete)
-                }
+            if (cloudSpoken) {
+                mainHandler.post { onComplete?.invoke() }
             } else {
-                withContext(Dispatchers.Main) { onComplete?.invoke() }
+                if (canUseCloud) {
+                    cloudCooldownUntil = System.currentTimeMillis() + 120_000L
+                    SystemLogBus.w("SaraVoice", "Cloud TTS unavailable, local fallback for 120s")
+                }
+                mainHandler.post { speakLocal(clean, onComplete) }
             }
         }
     }
 
     fun speakStreamDelta(deltaText: String, apiKey: String? = null, groqApiKey: String? = null) {
-        // lightweight streaming foundation: speak partial quickly via local if chunk large enough
         val clean = cleanText(deltaText)
-        if (clean.length < 18) return
-        speak(clean, apiKey, groqApiKey, onComplete = null)
+        if (clean.length < 20) return
+        speak(clean, apiKey, groqApiKey, null)
     }
 
-    private suspend fun speakCloudOnce(text: String, geminiKey: String, groqKey: String): Boolean {
+    private fun tryCloudOnce(text: String, geminiKey: String, groqKey: String): Boolean {
         if (geminiKey.isNotBlank()) {
             val audio = fetchGeminiTts(text, geminiKey)
-            if (audio != null) return playAudio(audio.first, audio.second)
+            if (audio != null && playAudio(audio.first, audio.second)) return true
         }
         if (groqKey.isNotBlank()) {
             val audio = fetchGroqTts(text, groqKey)
-            if (audio != null) return playAudio(audio.first, audio.second)
+            if (audio != null && playAudio(audio.first, audio.second)) return true
         }
         return false
     }
 
-    private suspend fun fetchGeminiTts(text: String, apiKey: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
-        try {
+    private fun fetchGeminiTts(text: String, apiKey: String): Pair<ByteArray, String>? {
+        return try {
             val model = "gemini-3.1-flash-tts"
             val body = JSONObject().apply {
                 put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", text)))))
                 put("generationConfig", JSONObject().apply {
                     put("responseModalities", JSONArray().put("AUDIO"))
-                    put("speechConfig", JSONObject().put("voiceConfig",
-                        JSONObject().put("prebuiltVoiceConfig", JSONObject().put("voiceName", "Kore"))))
+                    put("speechConfig", JSONObject().put("voiceConfig", JSONObject().put("prebuiltVoiceConfig", JSONObject().put("voiceName", "Kore"))))
                 })
             }
 
@@ -158,11 +146,12 @@ class JarvisSpeechSynthesizer(private val context: Context) {
                 .build()
 
             httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
+                if (!resp.isSuccessful) return null
                 val root = JSONObject(resp.body?.string().orEmpty())
                 val parts = root.optJSONArray("candidates")
-                    ?.optJSONObject(0)?.optJSONObject("content")
-                    ?.optJSONArray("parts") ?: return@withContext null
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("content")
+                    ?.optJSONArray("parts") ?: return null
 
                 for (i in 0 until parts.length()) {
                     val p = parts.optJSONObject(i) ?: continue
@@ -170,19 +159,19 @@ class JarvisSpeechSynthesizer(private val context: Context) {
                         val inline = p.getJSONObject("inlineData")
                         val mime = inline.optString("mimeType", "audio/wav")
                         val data = inline.optString("data", "")
-                        if (data.isNotBlank()) return@withContext Pair(Base64.decode(data, Base64.DEFAULT), mime)
+                        if (data.isNotBlank()) return Pair(Base64.decode(data, Base64.DEFAULT), mime)
                     }
                 }
                 null
             }
         } catch (e: Exception) {
-            Log.w("SaraVoice", "Gemini TTS fetch fail: ${e.message}")
+            Log.w("SaraVoice", "Gemini TTS fail: ${e.message}")
             null
         }
     }
 
-    private suspend fun fetchGroqTts(text: String, apiKey: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
-        try {
+    private fun fetchGroqTts(text: String, apiKey: String): Pair<ByteArray, String>? {
+        return try {
             val body = JSONObject().apply {
                 put("model", "playai-tts")
                 put("input", text)
@@ -198,40 +187,40 @@ class JarvisSpeechSynthesizer(private val context: Context) {
                 .build()
 
             httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val bytes = resp.body?.bytes() ?: return@withContext null
+                if (!resp.isSuccessful) return null
+                val bytes = resp.body?.bytes() ?: return null
                 if (bytes.isEmpty()) null else Pair(bytes, "audio/mp3")
             }
         } catch (e: Exception) {
-            Log.w("SaraVoice", "Groq TTS fetch fail: ${e.message}")
+            Log.w("SaraVoice", "Groq TTS fail: ${e.message}")
             null
         }
     }
 
-    private suspend fun playAudio(bytes: ByteArray, mimeType: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            stopPlaybackOnly()
+    private fun playAudio(bytes: ByteArray, mimeType: String): Boolean {
+        return try {
+            stopPlayback()
             val ext = if (mimeType.contains("mp3", true)) "mp3" else "wav"
-            val tmp = File(context.cacheDir, "sara_tts_${System.currentTimeMillis()}.$ext")
-            FileOutputStream(tmp).use { it.write(bytes) }
+            val file = File(context.cacheDir, "sara_tts_${System.currentTimeMillis()}.$ext")
+            FileOutputStream(file).use { it.write(bytes) }
 
             val lock = Object()
             var ok = true
 
-            withContext(Dispatchers.Main) {
+            mainHandler.post {
                 try {
                     val mp = MediaPlayer().apply {
-                        setDataSource(tmp.absolutePath)
+                        setDataSource(file.absolutePath)
                         setOnCompletionListener {
                             synchronized(lock) {
-                                try { tmp.delete() } catch (_: Exception) {}
+                                try { file.delete() } catch (_: Exception) {}
                                 lock.notify()
                             }
                         }
                         setOnErrorListener { _, _, _ ->
                             synchronized(lock) {
                                 ok = false
-                                try { tmp.delete() } catch (_: Exception) {}
+                                try { file.delete() } catch (_: Exception) {}
                                 lock.notify()
                             }
                             true
@@ -243,7 +232,7 @@ class JarvisSpeechSynthesizer(private val context: Context) {
                 } catch (_: Exception) {
                     synchronized(lock) {
                         ok = false
-                        try { tmp.delete() } catch (_: Exception) {}
+                        try { file.delete() } catch (_: Exception) {}
                         lock.notify()
                     }
                 }
@@ -256,22 +245,22 @@ class JarvisSpeechSynthesizer(private val context: Context) {
         }
     }
 
-    private fun stopPlaybackOnly() {
+    private fun stopPlayback() {
         try { mediaPlayer?.stop() } catch (_: Exception) {}
         try { mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
     }
 
     fun stop() {
-        stopPlaybackOnly()
+        stopPlayback()
     }
 
     fun shutdown() {
         stop()
-        try { emergencyTts?.stop() } catch (_: Exception) {}
-        try { emergencyTts?.shutdown() } catch (_: Exception) {}
-        emergencyTts = null
-        emergencyReady = false
+        try { localTts?.stop() } catch (_: Exception) {}
+        try { localTts?.shutdown() } catch (_: Exception) {}
+        localTts = null
+        localReady = false
         if (instance == this) instance = null
     }
 
@@ -281,11 +270,5 @@ class JarvisSpeechSynthesizer(private val context: Context) {
             .replace(Regex("```[\\s\\S]*?```"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-    }
-
-    private fun launchSafe(block: suspend () -> Unit): Job {
-        return scope.launch {
-            try { block() } catch (_: Exception) {}
-        }
     }
 }

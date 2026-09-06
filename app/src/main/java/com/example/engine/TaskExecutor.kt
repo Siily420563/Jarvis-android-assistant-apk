@@ -212,7 +212,8 @@ class TaskExecutor(
                             val service = JarvisAccessibilityService.instance
                             if (service != null) {
                                 // Attempt clicking the Send button in WhatsApp
-                                val sent = service.clickNodeByText("Send") || 
+                                val sent = service.clickNodeByTextStrict("Send") ||
+                                           service.clickNodeByText("Send") || 
                                            service.clickNodeByText("भेजें") || 
                                            service.clickNodeByText("send")
                                 if (!sent) {
@@ -374,7 +375,7 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     if (service != null && text.isNotBlank()) {
                         service.clickNodeByTextStrict(text) || service.clickNodeByText(text)
-                    } else true
+                    } else false
                 }
 
                 StepType.ACCESSIBILITY_TAP_COORDS -> {
@@ -383,7 +384,7 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     if (service != null) {
                         service.clickCoordinates(x, y)
-                    } else true
+                    } else false
                 }
 
                 StepType.ACCESSIBILITY_TYPE -> {
@@ -392,7 +393,7 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     if (service != null && text.isNotBlank()) {
                         service.inputText(text, targetHint)
-                    } else true
+                    } else false
                 }
 
                 StepType.ACCESSIBILITY_GLOBAL -> {
@@ -408,7 +409,7 @@ class TaskExecutor(
                             "SCREENSHOT" -> service.performScreenshot()
                             else -> service.performHome()
                         }
-                    } else true
+                    } else false
                 }
 
                 StepType.ACCESSIBILITY_SCROLL -> {
@@ -416,7 +417,7 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     if (service != null) {
                         if (dir == "UP") service.scrollUp() else service.scrollDown()
-                    } else true
+                    } else false
                 }
 
                 StepType.VISION_INSPECT_AND_TAP -> {

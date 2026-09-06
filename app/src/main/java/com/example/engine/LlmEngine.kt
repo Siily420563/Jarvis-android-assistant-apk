@@ -31,7 +31,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val providerBlockedUntil = mutableMapOf<String, Long>()
-    private val recentPlanCache = mutableMapOf<String, Pair<Long, TaskPlan>>()
+    private val responseCache = mutableMapOf<String, Pair<Long, TaskPlan>>()
     private val cacheTtlMs = 20_000L
 
     data class ProviderAttemptResult(
@@ -41,64 +41,54 @@ class LlmEngine(private val prefs: PreferencesManager) {
         val error: String = ""
     )
 
-    private fun isBlocked(provider: String): Boolean {
-        return (providerBlockedUntil[provider] ?: 0L) > System.currentTimeMillis()
-    }
+    private fun isBlocked(provider: String): Boolean =
+        (providerBlockedUntil[provider] ?: 0L) > System.currentTimeMillis()
 
     private fun block(provider: String, ms: Long) {
         providerBlockedUntil[provider] = System.currentTimeMillis() + ms
     }
 
-    private fun hasKey(provider: String): Boolean {
-        return when (provider) {
-            "GEMINI" -> prefs.geminiApiKey.isNotBlank()
-            "GROQ" -> prefs.groqApiKey.isNotBlank()
-            "OPENAI" -> prefs.openAiApiKey.isNotBlank()
-            "OPENROUTER" -> prefs.openRouterApiKey.isNotBlank()
-            else -> false
-        }
-    }
-
-    private fun normalizeGeminiModel(input: String): String {
-        val m = input.trim()
-        if (m.isBlank()) return "gemini-3.5-flash"
-        return when (m.lowercase()) {
-            "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash" -> m
-            else -> "gemini-3.5-flash"
-        }
-    }
-
-    private fun normalizeGroqModel(input: String): String {
-        val m = input.trim()
-        if (m.isBlank()) return "llama-3.1-8b-instant"
-        return when {
-            m.contains("llama-3.1-8b-instant", true) -> "llama-3.1-8b-instant"
-            m.contains("llama-3.3-70b-versatile", true) -> "llama-3.3-70b-versatile"
-            else -> "llama-3.1-8b-instant"
-        }
-    }
-
-    private fun normalizeOpenRouterModel(input: String): String {
-        val m = input.trim()
-        if (m.isBlank()) return "openai/gpt-4o-mini"
-        if (m.contains("claude-3.7-sonnet", true)) return "openai/gpt-4o-mini"
-        if (m.contains("claude-3.5-sonnet", true)) return "openai/gpt-4o-mini"
-        return m
-    }
-
-    private fun shortenError(err: String): String {
-        return err
-            .replace(Regex("\\s+"), " ")
-            .replace(Regex("\"user_id\"\\s*:\\s*\"[^\"]+\""), "\"user_id\":\"hidden\"")
-            .take(220)
+    private fun providerHasKey(provider: String): Boolean = when (provider) {
+        "GEMINI" -> prefs.geminiApiKey.isNotBlank()
+        "GROQ" -> prefs.groqApiKey.isNotBlank()
+        "OPENAI" -> prefs.openAiApiKey.isNotBlank()
+        "OPENROUTER" -> prefs.openRouterApiKey.isNotBlank()
+        else -> false
     }
 
     private fun providerOrder(): List<String> {
         val preferred = prefs.preferredLlm.uppercase()
-        val list = mutableListOf<String>()
-        if (preferred in listOf("GEMINI", "GROQ", "OPENAI", "OPENROUTER")) list.add(preferred)
-        list.addAll(listOf("GEMINI", "GROQ", "OPENAI", "OPENROUTER").filter { it !in list })
-        return list
+        val base = mutableListOf<String>()
+        if (preferred in listOf("GEMINI", "GROQ", "OPENAI", "OPENROUTER")) base.add(preferred)
+        base.addAll(listOf("GEMINI", "GROQ", "OPENAI", "OPENROUTER").filter { it !in base })
+        return base.filter { providerHasKey(it) }
+    }
+
+    private fun normalizeGeminiModel(model: String): String {
+        val m = model.trim()
+        return if (m.isBlank()) "gemini-3.5-flash" else m
+    }
+
+    private fun normalizeGroqPrimaryModel(model: String): String {
+        val m = model.trim()
+        if (m.isBlank()) return "llama-3.1-8b-instant"
+        if (m.contains("llama-3.1-8b-instant", true)) return "llama-3.1-8b-instant"
+        if (m.contains("llama-3.3-70b-versatile", true)) return "llama-3.3-70b-versatile"
+        return "llama-3.1-8b-instant"
+    }
+
+    private fun normalizeOpenRouterModel(model: String): String {
+        val m = model.trim()
+        if (m.isBlank()) return "openai/gpt-4o-mini"
+        if (m.contains("claude-3.7-sonnet", true)) return "openai/gpt-4o-mini"
+        return m
+    }
+
+    private fun shortError(msg: String): String {
+        return msg
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("\"user_id\"\\s*:\\s*\"[^\"]+\""), "\"user_id\":\"hidden\"")
+            .take(180)
     }
 
     suspend fun planAndQuery(
@@ -109,7 +99,6 @@ class LlmEngine(private val prefs: PreferencesManager) {
         conversationHistoryStr: String = "",
         interruptedTaskState: InterruptedTaskState? = null
     ): Result<TaskPlan> = withContext(Dispatchers.IO) {
-
         try {
             val cleanInput = userInput.trim()
             if (cleanInput.isBlank()) {
@@ -124,17 +113,15 @@ class LlmEngine(private val prefs: PreferencesManager) {
             }
 
             val cacheKey = "${prefs.activePersona.name}|${cleanInput.lowercase()}|${screenContextStr.take(120)}"
-            recentPlanCache[cacheKey]?.let { (ts, plan) ->
+            responseCache[cacheKey]?.let { (ts, cachedPlan) ->
                 if (System.currentTimeMillis() - ts < cacheTtlMs) {
                     return@withContext Result.success(
-                        plan.copy(usedFallback = true, fallbackReason = "Short cache hit")
+                        cachedPlan.copy(
+                            usedFallback = true,
+                            fallbackReason = "Short cache hit"
+                        )
                     )
                 }
-            }
-
-            if (!prefs.hasAnyApiKey()) {
-                val local = runLocalHeuristicPlanner(cleanInput, interruptedTaskState)
-                return@withContext Result.success(local.copy(usedFallback = true, fallbackReason = "No API keys"))
             }
 
             val systemPrompt = SaraSystemPrompt.buildSystemPrompt(
@@ -147,48 +134,53 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 interruptedTaskContext = interruptedTaskState?.summary() ?: ""
             )
 
-            var responseJsonStr: String? = null
+            val activeProviders = providerOrder()
+            if (activeProviders.isEmpty()) {
+                val local = runLocalHeuristicPlanner(cleanInput, interruptedTaskState)
+                return@withContext Result.success(local.copy(usedFallback = true, fallbackReason = "No API key"))
+            }
+
+            var responseJson: String? = null
+            val maxCalls = prefs.maxLlmCallsPerCommand.coerceIn(1, 4)
             var attempts = 0
-            val maxCalls = prefs.maxLlmCallsPerCommand.coerceIn(1, 5)
             val errors = mutableListOf<String>()
 
-            for (provider in providerOrder()) {
+            for (provider in activeProviders) {
                 if (attempts >= maxCalls) break
-                if (!hasKey(provider)) continue
                 if (isBlocked(provider)) continue
-
                 attempts++
-                val res = when (provider) {
+
+                val result = when (provider) {
                     "GEMINI" -> callGeminiSafe(systemPrompt, cleanInput)
                     "GROQ" -> callGroqSafe(systemPrompt, cleanInput)
                     "OPENAI" -> callOpenAiSafe(systemPrompt, cleanInput)
                     "OPENROUTER" -> callOpenRouterSafe(systemPrompt, cleanInput)
-                    else -> ProviderAttemptResult(false, error = "unknown provider")
+                    else -> ProviderAttemptResult(false, error = "Unknown provider")
                 }
 
-                if (res.ok && !res.response.isNullOrBlank()) {
-                    responseJsonStr = res.response
-                    SystemLogBus.i("LlmEngine", "Provider success: $provider in $attempts attempt(s)")
+                if (result.ok && !result.response.isNullOrBlank()) {
+                    responseJson = result.response
+                    SystemLogBus.i("LlmEngine", "Provider success: $provider")
                     break
                 }
 
-                val err = "$provider ${res.httpCode}: ${shortenError(res.error)}"
-                errors.add(err)
-                SystemLogBus.w("LlmEngine", "Provider failed: $err")
+                val compactErr = shortError(result.error.ifBlank { "empty response" })
+                errors.add("$provider ${result.httpCode}: $compactErr")
+                SystemLogBus.w("LlmEngine", "Provider failed: $provider ${result.httpCode}")
 
-                if (res.httpCode in 400..499 && res.httpCode != 429) {
+                if (result.httpCode in 400..499 && result.httpCode != 429) {
                     block(provider, 10 * 60_000L)
-                    onHttp4xxError?.invoke(err)
-                } else if (res.httpCode == 429 || res.httpCode >= 500) {
-                    block(provider, 45_000L)
+                    onHttp4xxError?.invoke("$provider config issue")
+                } else if (result.httpCode == 429 || result.httpCode >= 500) {
+                    block(provider, 60_000L)
                 }
             }
 
-            if (!responseJsonStr.isNullOrBlank()) {
-                val cleanJson = cleanJsonOutput(responseJsonStr)
+            if (!responseJson.isNullOrBlank()) {
+                val cleanJson = cleanJsonOutput(responseJson)
                 val parsed = TaskPlan.fromJsonString(cleanJson)
                 if (parsed != null) {
-                    recentPlanCache[cacheKey] = System.currentTimeMillis() to parsed
+                    responseCache[cacheKey] = System.currentTimeMillis() to parsed
                     return@withContext Result.success(parsed)
                 }
 
@@ -199,24 +191,23 @@ class LlmEngine(private val prefs: PreferencesManager) {
                         steps = emptyList(),
                         speechResponseHinglish = cleanJson,
                         usedFallback = true,
-                        fallbackReason = "Model non-JSON response"
+                        fallbackReason = "Model non-JSON output"
                     )
                 )
             }
 
-            // No provider succeeded -> strong local fallback
-            lastErrorReason = errors.joinToString(" | ").take(260)
+            lastErrorReason = errors.joinToString(" | ").take(200)
             val local = runLocalHeuristicPlanner(cleanInput, interruptedTaskState)
             return@withContext Result.success(
                 local.copy(
                     usedFallback = true,
-                    fallbackReason = if (errors.isEmpty()) "No provider response" else "Providers unavailable"
+                    fallbackReason = "Provider unavailable"
                 )
             )
         } catch (e: Exception) {
-            lastErrorReason = e.message ?: e.javaClass.simpleName
+            lastErrorReason = e.message ?: "Engine exception"
             val local = runLocalHeuristicPlanner(userInput, interruptedTaskState)
-            Result.success(local.copy(usedFallback = true, fallbackReason = "Engine exception"))
+            return@withContext Result.success(local.copy(usedFallback = true, fallbackReason = "Engine exception"))
         }
     }
 
@@ -243,6 +234,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
     private fun callGemini(systemPrompt: String, userInput: String): ProviderAttemptResult {
         val key = prefs.geminiApiKey
         val model = normalizeGeminiModel(prefs.geminiModel)
+
         val body = JSONObject().apply {
             if (systemPrompt.isNotBlank()) {
                 put("systemInstruction", JSONObject().apply {
@@ -255,6 +247,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 put("responseMimeType", "application/json")
             })
         }
+
         val req = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key")
             .addHeader("Content-Type", "application/json")
@@ -266,20 +259,24 @@ class LlmEngine(private val prefs: PreferencesManager) {
             if (!resp.isSuccessful) {
                 return ProviderAttemptResult(false, httpCode = resp.code, error = "Gemini HTTP ${resp.code}: $raw")
             }
-            val text = JSONObject(raw).optJSONArray("candidates")
-                ?.optJSONObject(0)?.optJSONObject("content")
-                ?.optJSONArray("parts")?.optJSONObject(0)
-                ?.optString("text", "").orEmpty()
+            val text = JSONObject(raw)
+                .optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?.optJSONObject(0)
+                ?.optString("text", "")
+                .orEmpty()
 
-            if (text.isBlank()) return ProviderAttemptResult(false, httpCode = 500, error = "Gemini blank text")
+            if (text.isBlank()) return ProviderAttemptResult(false, httpCode = 500, error = "Gemini empty text")
             return ProviderAttemptResult(true, response = text)
         }
     }
 
     private fun callGroq(systemPrompt: String, userInput: String): ProviderAttemptResult {
         val key = prefs.groqApiKey
-        val primary = normalizeGroqModel(prefs.groqModel)
-        val fallback = "llama-3.1-8b-instant"
+        val primary = normalizeGroqPrimaryModel(prefs.groqModel)
+        val backup = "llama-3.1-8b-instant"
 
         fun doCall(model: String): ProviderAttemptResult {
             val body = JSONObject().apply {
@@ -291,6 +288,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 put("response_format", JSONObject().put("type", "json_object"))
                 put("temperature", 0.2)
             }
+
             val req = Request.Builder()
                 .url("https://api.groq.com/openai/v1/chat/completions")
                 .addHeader("Authorization", "Bearer $key")
@@ -301,21 +299,15 @@ class LlmEngine(private val prefs: PreferencesManager) {
             client.newCall(req).execute().use { resp ->
                 val raw = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) return ProviderAttemptResult(false, httpCode = resp.code, error = "Groq HTTP ${resp.code}: $raw")
-                val text = JSONObject(raw).getJSONArray("choices")
-                    .getJSONObject(0).getJSONObject("message")
-                    .getString("content")
+                val text = JSONObject(raw).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
                 return ProviderAttemptResult(true, response = text)
             }
         }
 
         val first = doCall(primary)
         if (first.ok) return first
-
-        val needFallback = first.httpCode == 404 || first.error.contains("model_not_found", true)
-        if (needFallback && primary != fallback) {
-            val second = doCall(fallback)
-            if (second.ok) return second
-            return second
+        if ((first.httpCode == 404 || first.error.contains("model_not_found", true)) && primary != backup) {
+            return doCall(backup)
         }
         return first
     }
@@ -345,9 +337,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
         client.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) return ProviderAttemptResult(false, httpCode = resp.code, error = "OpenAI HTTP ${resp.code}: $raw")
-            val text = JSONObject(raw).getJSONArray("choices")
-                .getJSONObject(0).getJSONObject("message")
-                .getString("content")
+            val text = JSONObject(raw).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
             return ProviderAttemptResult(true, response = text)
         }
     }
@@ -355,7 +345,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
     private fun callOpenRouter(systemPrompt: String, userInput: String): ProviderAttemptResult {
         val key = prefs.openRouterApiKey
         val primary = normalizeOpenRouterModel(prefs.openRouterModel)
-        val fallback = "openai/gpt-4o-mini"
+        val backup = "openai/gpt-4o-mini"
 
         fun doCall(model: String): ProviderAttemptResult {
             val body = JSONObject().apply {
@@ -366,6 +356,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 })
                 put("response_format", JSONObject().put("type", "json_object"))
             }
+
             val req = Request.Builder()
                 .url("https://openrouter.ai/api/v1/chat/completions")
                 .addHeader("Authorization", "Bearer $key")
@@ -376,46 +367,42 @@ class LlmEngine(private val prefs: PreferencesManager) {
             client.newCall(req).execute().use { resp ->
                 val raw = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) return ProviderAttemptResult(false, httpCode = resp.code, error = "OpenRouter HTTP ${resp.code}: $raw")
-                val text = JSONObject(raw).getJSONArray("choices")
-                    .getJSONObject(0).getJSONObject("message")
-                    .getString("content")
+                val text = JSONObject(raw).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
                 return ProviderAttemptResult(true, response = text)
             }
         }
 
         val first = doCall(primary)
         if (first.ok) return first
-
-        val shouldFallback = first.httpCode == 404 || first.error.contains("No endpoints found", true)
-        if (shouldFallback && (primary != fallback)) {
-            val second = doCall(fallback)
-            if (second.ok) return second
-            return second
+        if ((first.httpCode == 404 || first.error.contains("No endpoints found", true)) && primary != backup) {
+            return doCall(backup)
         }
         return first
     }
 
     suspend fun queryPlan(fullPrompt: String): String? = withContext(Dispatchers.IO) {
-        var attempts = 0
-        val maxCalls = prefs.maxLlmCallsPerCommand.coerceIn(1, 5)
+        val providers = providerOrder()
+        if (providers.isEmpty()) return@withContext null
+        val maxCalls = prefs.maxLlmCallsPerCommand.coerceIn(1, 4)
+        var calls = 0
 
-        for (provider in providerOrder()) {
-            if (attempts >= maxCalls) break
-            if (!hasKey(provider)) continue
+        for (provider in providers) {
+            if (calls >= maxCalls) break
             if (isBlocked(provider)) continue
-            attempts++
+            calls++
 
             val res = when (provider) {
                 "GEMINI" -> callGeminiSafe("", fullPrompt)
                 "GROQ" -> callGroqSafe("", fullPrompt)
                 "OPENAI" -> callOpenAiSafe("", fullPrompt)
                 "OPENROUTER" -> callOpenRouterSafe("", fullPrompt)
-                else -> ProviderAttemptResult(false, error = "unknown")
+                else -> ProviderAttemptResult(false, error = "Unknown")
             }
+
             if (res.ok && !res.response.isNullOrBlank()) return@withContext res.response
 
             if (res.httpCode in 400..499 && res.httpCode != 429) block(provider, 10 * 60_000L)
-            else if (res.httpCode == 429 || res.httpCode >= 500) block(provider, 45_000L)
+            else if (res.httpCode == 429 || res.httpCode >= 500) block(provider, 60_000L)
         }
         null
     }
@@ -423,6 +410,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
     suspend fun queryGeminiVision(bitmap: Bitmap, targetDescription: String): Pair<Float, Float>? = withContext(Dispatchers.IO) {
         val key = prefs.geminiApiKey
         if (key.isBlank()) return@withContext null
+
         try {
             val baos = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
@@ -430,8 +418,8 @@ class LlmEngine(private val prefs: PreferencesManager) {
 
             val prompt = """
                 Find UI element: "$targetDescription".
-                Return only JSON {"x":int 0..1000,"y":int 0..1000}
-                If not found return {"x":-1,"y":-1}
+                Return only JSON {"x":int 0..1000,"y":int 0..1000}.
+                If not found return {"x":-1,"y":-1}.
             """.trimIndent()
 
             val body = JSONObject().apply {
@@ -452,13 +440,10 @@ class LlmEngine(private val prefs: PreferencesManager) {
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val raw = resp.body?.string().orEmpty()
-                val text = JSONObject(raw).getJSONArray("candidates")
-                    .getJSONObject(0).getJSONObject("content")
-                    .getJSONArray("parts").getJSONObject(0)
-                    .getString("text")
-                val coords = JSONObject(cleanJsonOutput(text))
-                val nx = coords.optDouble("x", -1.0)
-                val ny = coords.optDouble("y", -1.0)
+                val text = JSONObject(raw).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                val coord = JSONObject(cleanJsonOutput(text))
+                val nx = coord.optDouble("x", -1.0)
+                val ny = coord.optDouble("y", -1.0)
                 if (nx < 0 || ny < 0) return@withContext null
                 Pair((nx / 1000.0 * bitmap.width).toFloat(), (ny / 1000.0 * bitmap.height).toFloat())
             }
@@ -487,7 +472,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
 
-        if (clean.contains("torch") || clean.contains("flashlight") || clean.contains("flash")) {
+        if (clean.contains("torch") || clean.contains("flashlight")) {
             val off = clean.contains("off") || clean.contains("band")
             val state = if (off) "OFF" else "ON"
             return TaskPlan(
@@ -511,22 +496,8 @@ class LlmEngine(private val prefs: PreferencesManager) {
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "GO_HOME",
-                steps = listOf(TaskStep("home_1", StepType.ACCESSIBILITY_GLOBAL, mapOf("action" to "HOME"), "Home ja rahe hain")),
+                steps = listOf(TaskStep("home_1", StepType.ACCESSIBILITY_GLOBAL, mapOf("action" to "HOME"), "Home open kar rahe hain")),
                 speechResponseHinglish = "Home open kar diya."
-            )
-        }
-
-        if (clean.contains("volume")) {
-            val direction = when {
-                clean.contains("down") || clean.contains("kam") || clean.contains("ghata") -> "DOWN"
-                clean.contains("mute") || clean.contains("silent") -> "MUTE"
-                else -> "UP"
-            }
-            return TaskPlan(
-                originalQuery = query,
-                intentKey = "CONTROL_VOLUME",
-                steps = listOf(TaskStep("vol_1", StepType.CONTROL_VOLUME, mapOf("direction" to direction), "Volume adjust kar rahe hain")),
-                speechResponseHinglish = "Volume adjust kar diya."
             )
         }
 
@@ -536,33 +507,19 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 .replace("install karo", "")
                 .replace("install", "")
                 .trim()
-                .ifBlank { "app" }
+                .ifBlank { "facebook" }
 
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "PLAYSTORE_INSTALL_FLOW",
                 steps = listOf(
                     TaskStep("ps_1", StepType.OPEN_APP, mapOf("appName" to "Play Store"), "Play Store open kar rahe hain"),
-                    TaskStep("ps_2", StepType.ACCESSIBILITY_TAP_TEXT, mapOf("text" to "Search"), "Search field open kar rahe hain"),
-                    TaskStep("ps_3", StepType.ACCESSIBILITY_TYPE, mapOf("text" to appName, "targetHint" to "Search"), "App search kar rahe hain"),
+                    TaskStep("ps_2", StepType.ACCESSIBILITY_TAP_TEXT, mapOf("text" to "Search"), "Search pe tap kar rahe hain"),
+                    TaskStep("ps_3", StepType.ACCESSIBILITY_TYPE, mapOf("text" to appName, "targetHint" to "Search"), "App type kar rahe hain"),
                     TaskStep("ps_4", StepType.ACCESSIBILITY_TAP_TEXT, mapOf("text" to appName), "App result select kar rahe hain"),
-                    TaskStep("ps_5", StepType.ACCESSIBILITY_TAP_TEXT, mapOf("text" to "Install"), "Install button tap kar rahe hain")
+                    TaskStep("ps_5", StepType.ACCESSIBILITY_TAP_TEXT, mapOf("text" to "Install"), "Install pe tap kar rahe hain")
                 ),
                 speechResponseHinglish = "$appName install flow start kar diya."
-            )
-        }
-
-        if (clean.contains("whatsapp") && clean.contains("ko")) {
-            val name = Regex("([a-zA-Z0-9\\u0900-\\u097F]+)\\s*ko").find(clean)?.groupValues?.get(1) ?: "mummy"
-            val msg = clean.substringAfter("ki ", "").ifBlank { "Hi" }
-            return TaskPlan(
-                originalQuery = query,
-                intentKey = "WHATSAPP_SEND",
-                steps = listOf(
-                    TaskStep("wa_1", StepType.FIND_CONTACT, mapOf("name" to name), "$name ka contact dhoond rahe hain"),
-                    TaskStep("wa_2", StepType.SEND_WHATSAPP, mapOf("contactName" to name, "message" to msg, "autoSend" to "true"), "WhatsApp message bhej rahe hain")
-                ),
-                speechResponseHinglish = "$name ko WhatsApp message bhej rahi hoon."
             )
         }
 
@@ -572,7 +529,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 originalQuery = query,
                 intentKey = "PLAY_YOUTUBE",
                 steps = listOf(TaskStep("yt_1", StepType.OPEN_APP, mapOf("appName" to "YouTube", "query" to q), "YouTube open kar rahe hain")),
-                speechResponseHinglish = "YouTube par $q chala rahi hoon."
+                speechResponseHinglish = "YouTube pe $q chala rahi hoon."
             )
         }
 
@@ -596,7 +553,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
                 steps = emptyList(),
                 speechResponseHinglish = "Main yahan hoon. Batao kya kaam karna hai?",
                 usedFallback = true,
-                fallbackReason = "Conversation local mode"
+                fallbackReason = "Local conversation"
             )
         }
 
@@ -604,9 +561,9 @@ class LlmEngine(private val prefs: PreferencesManager) {
             originalQuery = query,
             intentKey = "CONVERSATION",
             steps = emptyList(),
-            speechResponseHinglish = "Command samajh liya. Thoda aur specific bolo, main execute karti hoon.",
+            speechResponseHinglish = "Command samajh liya. Thoda specific bolo, main execute karti hoon.",
             usedFallback = true,
-            fallbackReason = "Local heuristic mode"
+            fallbackReason = "Local heuristic"
         )
     }
 }

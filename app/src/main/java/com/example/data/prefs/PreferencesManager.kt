@@ -74,8 +74,8 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putInt("max_agent_steps", value.coerceIn(5, 50)).apply()
 
     var maxLlmCallsPerCommand: Int
-        get() = prefs.getInt("max_llm_calls_per_command", 3)
-        set(value) = prefs.edit().putInt("max_llm_calls_per_command", value.coerceIn(1, 8)).apply()
+        get() = prefs.getInt("max_llm_calls_per_command", 2)
+        set(value) = prefs.edit().putInt("max_llm_calls_per_command", value.coerceIn(1, 4)).apply()
 
     var verboseVoiceFeedback: Boolean
         get() = prefs.getBoolean("verbose_voice_feedback", true)

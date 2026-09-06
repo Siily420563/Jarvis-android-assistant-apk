@@ -198,6 +198,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _isListening.value = false
                         com.example.audio.MicArbiter.release("app")
                         Log.e("MainViewModel", "Speech recognition error code: $error")
+                        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
+                            try { speechRecognizer?.destroy() } catch (_: Exception) {}
+                            speechRecognizer = null
+                        }
                         val isGf = prefs.activePersona == PersonaType.GIRLFRIEND
                         val hint = when (error) {
                             SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
@@ -280,6 +284,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 700L)
             }
             try {
                 recognizer.startListening(intent)
@@ -460,6 +469,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun executeUserCommand(query: String) {
         if (query.isBlank()) return
+        stopListening()
         val clean = query.trim().lowercase()
         if (clean.startsWith("agent ") || clean.startsWith("auto ") || clean.startsWith("goal ") || clean.startsWith("react ")) {
             val stripped = query.substringAfter(" ").trim()
