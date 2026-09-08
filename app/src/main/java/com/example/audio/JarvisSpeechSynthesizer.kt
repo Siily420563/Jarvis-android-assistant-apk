@@ -29,6 +29,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 1. Speaks token-by-token / chunk-by-chunk without waiting for the full sentence to finish.
  * 2. Uses Gemini Live Voice (AUDIO modality) when available and falls back smoothly to Android Native TTS.
  * 3. Supports instant barge-in interruption (stop speaking immediately when user speaks).
+ *
+ * FIXES for "TTS not working":
+ * - Added isSpeaking flag so barge-in doesn't kill speech spuriously
+ * - Fixed init race: if speak() called before TTS ready, we now wait/retry instead of silent drop
+ * - Added auto retry for LANG_MISSING_DATA and init failure
+ * - Improved cloud -> local fallback reliability and logging
+ * - Fixed MediaPlayer blocking wait to use proper async completion
  */
 class JarvisSpeechSynthesizer(private val context: Context) {
     companion object {
@@ -50,6 +57,9 @@ class JarvisSpeechSynthesizer(private val context: Context) {
     private var mediaPlayer: MediaPlayer? = null
     private var localTts: TextToSpeech? = null
     @Volatile private var localReady = false
+    @Volatile private var localInitFailed = false
+    @Volatile var isSpeaking: Boolean = false
+        private set
     @Volatile private var cloudCooldownUntil = 0L
 
     // Incremental streaming buffer
@@ -57,6 +67,7 @@ class JarvisSpeechSynthesizer(private val context: Context) {
     private val speechQueue = ConcurrentLinkedQueue<String>()
     private val isPlayingQueue = AtomicBoolean(false)
     private var streamCompletionCallback: (() -> Unit)? = null
+    private var initRetryCount = 0
 
     init {
         instance = this
@@ -64,17 +75,92 @@ class JarvisSpeechSynthesizer(private val context: Context) {
     }
 
     private fun initLocal() {
-        localTts = TextToSpeech(context.applicationContext) { status ->
-            localReady = status == TextToSpeech.SUCCESS
-            if (localReady) {
-                // Set Hindi-Indian or English-Indian for perfect Hinglish phonetics
-                val hi = Locale("hi", "IN")
-                val res = localTts?.setLanguage(hi)
-                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    localTts?.setLanguage(Locale("en", "IN"))
+        try {
+            localTts = TextToSpeech(context.applicationContext) { status ->
+                mainHandler.post {
+                    if (status == TextToSpeech.SUCCESS) {
+                        localReady = true
+                        localInitFailed = false
+                        // Try Hindi-Indian for Hinglish phonetics, fallback chain
+                        val tts = localTts
+                        if (tts != null) {
+                            val hiResult = try { tts.setLanguage(Locale("hi", "IN")) } catch (e: Exception) { TextToSpeech.LANG_NOT_SUPPORTED }
+                            val hiSuccess = hiResult != TextToSpeech.LANG_MISSING_DATA && hiResult != TextToSpeech.LANG_NOT_SUPPORTED
+                            if (!hiSuccess) {
+                                val enInResult = try { tts.setLanguage(Locale("en", "IN")) } catch (e: Exception) { TextToSpeech.LANG_NOT_SUPPORTED }
+                                val enInSuccess = enInResult != TextToSpeech.LANG_MISSING_DATA && enInResult != TextToSpeech.LANG_NOT_SUPPORTED
+                                if (!enInSuccess) {
+                                    try { tts.setLanguage(Locale.US) } catch (_: Exception) {}
+                                } else {
+                                    SystemLogBus.i(TAG, "TTS locale set to en-IN")
+                                }
+                            } else {
+                                SystemLogBus.i(TAG, "TTS locale set to hi-IN")
+                            }
+                            try {
+                                tts.setSpeechRate(1.05f)
+                                tts.setPitch(1.0f)
+                                // Attach a persistent utterance listener that tracks speaking state
+                                tts.setOnUtteranceProgressListener(createUtteranceListener())
+                            } catch (e: Exception) {
+                                Log.w(TAG, "TTS config failed: ${e.message}")
+                            }
+                            Log.i(TAG, "Local TTS READY")
+                            SystemLogBus.i(TAG, "TTS ready")
+                        }
+                    } else {
+                        localReady = false
+                        localInitFailed = true
+                        Log.e(TAG, "TextToSpeech init FAILED status=$status")
+                        SystemLogBus.e(TAG, "TTS init failed: $status")
+                        // Retry once after delay if engine missing
+                        if (initRetryCount < 2) {
+                            initRetryCount++
+                            mainHandler.postDelayed({ initLocal() }, 2000)
+                        }
+                    }
                 }
-                localTts?.setSpeechRate(1.05f)
-                localTts?.setPitch(1.0f)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "initLocal exception", e)
+            SystemLogBus.e(TAG, "TTS init exception: ${e.message}")
+            localReady = false
+        }
+    }
+
+    private var currentUtteranceCallback: (() -> Unit)? = null
+
+    private fun createUtteranceListener(): UtteranceProgressListener {
+        return object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                isSpeaking = true
+            }
+            override fun onDone(utteranceId: String?) {
+                isSpeaking = false
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                mainHandler.post { cb?.invoke() }
+            }
+            override fun onError(utteranceId: String?) {
+                isSpeaking = false
+                Log.w(TAG, "TTS utterance error $utteranceId")
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                mainHandler.post { cb?.invoke() }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                isSpeaking = false
+                Log.w(TAG, "TTS utterance error $utteranceId code $errorCode")
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                mainHandler.post { cb?.invoke() }
+            }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                isSpeaking = false
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                mainHandler.post { cb?.invoke() }
             }
         }
     }
@@ -155,12 +241,21 @@ class JarvisSpeechSynthesizer(private val context: Context) {
                     val completer = CompletableDeferred<Unit>()
                     mainHandler.post {
                         speakLocalChunk(nextChunk) {
-                            completer.complete(Unit)
+                            if (!completer.isCompleted) completer.complete(Unit)
                         }
                     }
                     try {
-                        withTimeout(10000L) { completer.await() }
-                    } catch (_: Exception) {}
+                        withTimeout(12000L) { completer.await() }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Chunk speech timeout: ${e.message}")
+                        // Ensure isSpeaking reset
+                        isSpeaking = false
+                    }
+                    // Small gap between chunks for natural rhythm
+                    delay(80)
+                } else {
+                    // Cloud already played via MediaPlayer blocking wait
+                    delay(80)
                 }
             }
         }
@@ -177,6 +272,7 @@ class JarvisSpeechSynthesizer(private val context: Context) {
         }
 
         stop() // Interrupt any previous speech
+        isSpeaking = true
 
         scope.launch {
             val canUseCloud = System.currentTimeMillis() > cloudCooldownUntil && !apiKey.isNullOrBlank()
@@ -185,9 +281,24 @@ class JarvisSpeechSynthesizer(private val context: Context) {
             } else false
 
             if (cloudSpoken) {
+                isSpeaking = false
                 mainHandler.post { onComplete?.invoke() }
             } else {
+                // Fallback to local TTS - ensure we are on main thread
                 mainHandler.post {
+                    if (!localReady) {
+                        Log.w(TAG, "Local TTS not ready yet, attempting to speak anyway (ready=$localReady, failed=$localInitFailed)")
+                        SystemLogBus.w(TAG, "TTS not ready - retrying init")
+                        // Try to re-init if failed
+                        if (localInitFailed || localTts == null) {
+                            initLocal()
+                            // Wait briefly then attempt speak
+                            mainHandler.postDelayed({
+                                speakLocal(clean, onComplete)
+                            }, 600)
+                            return@post
+                        }
+                    }
                     speakLocal(clean, onComplete)
                 }
             }
@@ -197,49 +308,78 @@ class JarvisSpeechSynthesizer(private val context: Context) {
     private fun speakLocalChunk(text: String, onComplete: () -> Unit) {
         val tts = localTts
         if (!localReady || tts == null) {
+            Log.w(TAG, "speakLocalChunk dropped: not ready")
+            SystemLogBus.w(TAG, "TTS chunk dropped - engine not ready")
+            isSpeaking = false
             onComplete()
             return
         }
-        val id = "chunk_${System.currentTimeMillis()}_${(1..1000).random()}"
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) {
-                if (utteranceId == id) onComplete()
-            }
-            override fun onError(utteranceId: String?) {
-                if (utteranceId == id) onComplete()
-            }
-        })
+        val id = "chunk_${System.currentTimeMillis()}_${(1..9999).random()}"
+        currentUtteranceCallback = onComplete
+        isSpeaking = true
         val args = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id) }
-        tts.speak(text, TextToSpeech.QUEUE_ADD, args, id)
+        try {
+            val result = tts.speak(text, TextToSpeech.QUEUE_ADD, args, id)
+            if (result != TextToSpeech.SUCCESS) {
+                Log.w(TAG, "QUEUE_ADD speak returned $result")
+                isSpeaking = false
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                onComplete()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "speakLocalChunk exception", e)
+            isSpeaking = false
+            currentUtteranceCallback = null
+            onComplete()
+        }
     }
 
     fun speakLocal(text: String, onComplete: (() -> Unit)? = null) {
         val clean = cleanText(text)
         if (clean.isBlank()) {
+            isSpeaking = false
             mainHandler.post { onComplete?.invoke() }
             return
         }
         val tts = localTts
         if (!localReady || tts == null) {
+            Log.w(TAG, "speakLocal dropped: not ready ready=$localReady ttsNull=${tts == null}")
+            SystemLogBus.w(TAG, "TTS utterance skipped - engine not ready: $clean".take(120))
+            isSpeaking = false
             mainHandler.post { onComplete?.invoke() }
+            // Attempt to recover: re-init
+            if (localInitFailed) {
+                mainHandler.postDelayed({ initLocal() }, 1000)
+            }
             return
         }
 
         val id = "local_${System.currentTimeMillis()}"
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) { mainHandler.post { onComplete?.invoke() } }
-            override fun onError(utteranceId: String?) { mainHandler.post { onComplete?.invoke() } }
-        })
-
+        currentUtteranceCallback = onComplete
+        isSpeaking = true
         val args = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id) }
-        tts.speak(clean, TextToSpeech.QUEUE_FLUSH, args, id)
+        try {
+            val result = tts.speak(clean, TextToSpeech.QUEUE_FLUSH, args, id)
+            if (result != TextToSpeech.SUCCESS) {
+                Log.w(TAG, "QUEUE_FLUSH speak returned $result")
+                isSpeaking = false
+                val cb = currentUtteranceCallback
+                currentUtteranceCallback = null
+                mainHandler.post { cb?.invoke() }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "speakLocal exception", e)
+            isSpeaking = false
+            currentUtteranceCallback = null
+            mainHandler.post { onComplete?.invoke() }
+        }
     }
 
     /**
      * Calls Google Gemini Live Audio / TTS API
-     * Uses gemini-2.5-flash-preview-tts or gemini-2.5-flash-native-audio-preview-12-2025
+     * Uses gemini-2.5-flash-preview-tts
+     * On failure, logs and falls back to local TTS.
      */
     private fun tryCloudLiveAudio(text: String, apiKey: String): Boolean {
         return try {
@@ -260,8 +400,17 @@ class JarvisSpeechSynthesizer(private val context: Context) {
 
             httpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    if (resp.code == 404 || resp.code == 400) {
-                        cloudCooldownUntil = System.currentTimeMillis() + 60_000L
+                    val errBody = resp.body?.string()?.take(200) ?: ""
+                    Log.w(TAG, "Cloud TTS HTTP ${resp.code}: $errBody")
+                    // 400/404 = model not found -> cooldown 2min; 401/403 = auth -> cooldown 5min
+                    when (resp.code) {
+                        404, 400 -> cloudCooldownUntil = System.currentTimeMillis() + 120_000L
+                        401, 403 -> {
+                            cloudCooldownUntil = System.currentTimeMillis() + 300_000L
+                            SystemLogBus.w(TAG, "Cloud TTS auth failed - using local voice")
+                        }
+                        429 -> cloudCooldownUntil = System.currentTimeMillis() + 60_000L
+                        else -> if (resp.code >= 500) cloudCooldownUntil = System.currentTimeMillis() + 30_000L
                     }
                     return false
                 }
@@ -287,6 +436,7 @@ class JarvisSpeechSynthesizer(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Gemini Live Audio call failed: ${e.message}")
+            // Don't cooldown on network exception - may be transient
             false
         }
     }
@@ -300,46 +450,75 @@ class JarvisSpeechSynthesizer(private val context: Context) {
 
             val lock = Object()
             var ok = true
+            var completed = false
 
             mainHandler.post {
+                var mp: MediaPlayer? = null
                 try {
-                    val mp = MediaPlayer().apply {
+                    mp = MediaPlayer().apply {
                         setDataSource(file.absolutePath)
                         setOnCompletionListener {
                             synchronized(lock) {
+                                completed = true
                                 try { file.delete() } catch (_: Exception) {}
-                                lock.notify()
+                                lock.notifyAll()
                             }
+                            // Release after completion
+                            try { release() } catch (_: Exception) {}
+                            if (mediaPlayer == this) mediaPlayer = null
                         }
-                        setOnErrorListener { _, _, _ ->
+                        setOnErrorListener { _, what, extra ->
+                            Log.w(TAG, "MediaPlayer error what=$what extra=$extra")
                             synchronized(lock) {
                                 ok = false
+                                completed = true
                                 try { file.delete() } catch (_: Exception) {}
-                                lock.notify()
+                                lock.notifyAll()
                             }
+                            try { release() } catch (_: Exception) {}
+                            if (mediaPlayer == this) mediaPlayer = null
                             true
                         }
-                        prepare()
-                        start()
+                        // Use async prepare to avoid blocking
+                        setOnPreparedListener { it.start() }
+                        prepareAsync()
                     }
                     mediaPlayer = mp
-                } catch (_: Exception) {
+                    isSpeaking = true
+                } catch (e: Exception) {
+                    Log.e(TAG, "MediaPlayer setup failed", e)
+                    try { mp?.release() } catch (_: Exception) {}
                     synchronized(lock) {
                         ok = false
+                        completed = true
                         try { file.delete() } catch (_: Exception) {}
-                        lock.notify()
+                        lock.notifyAll()
                     }
+                    isSpeaking = false
                 }
             }
 
-            synchronized(lock) { lock.wait(12_000L) }
+            synchronized(lock) {
+                val start = System.currentTimeMillis()
+                while (!completed && System.currentTimeMillis() - start < 15000L) {
+                    lock.wait(15000L)
+                }
+                if (!completed) {
+                    Log.w(TAG, "playAudio timeout")
+                    ok = false
+                }
+            }
+            isSpeaking = false
             ok
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "playAudio exception", e)
+            isSpeaking = false
             false
         }
     }
 
     private fun stopPlayback() {
+        isSpeaking = false
         try { mediaPlayer?.stop() } catch (_: Exception) {}
         try { mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
@@ -349,9 +528,11 @@ class JarvisSpeechSynthesizer(private val context: Context) {
      * Barge-in interruption: immediately cuts off all speech.
      */
     fun stop() {
+        isSpeaking = false
         tokenAccumulator.setLength(0)
         speechQueue.clear()
         isPlayingQueue.set(false)
+        currentUtteranceCallback = null
         stopPlayback()
         try { localTts?.stop() } catch (_: Exception) {}
     }
@@ -361,6 +542,7 @@ class JarvisSpeechSynthesizer(private val context: Context) {
         try { localTts?.shutdown() } catch (_: Exception) {}
         localTts = null
         localReady = false
+        localInitFailed = false
         if (instance == this) instance = null
     }
 

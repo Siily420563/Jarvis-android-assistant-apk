@@ -463,7 +463,7 @@ class LlmEngine(private val prefs: PreferencesManager) {
     private fun runLocalHeuristicPlanner(query: String, interruptedTask: InterruptedTaskState? = null): TaskPlan {
         val clean = query.trim().lowercase()
 
-        if (interruptedTask != null && (clean == "continue" || clean == "resume" || clean.contains("aage"))) {
+        if (interruptedTask != null && (clean == "continue" || clean == "resume" || clean.contains("aage") || clean.contains("bhej do") || clean.contains("kar do"))) {
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "RESUME_TASK",
@@ -472,8 +472,9 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
 
-        if (clean.contains("torch") || clean.contains("flashlight")) {
-            val off = clean.contains("off") || clean.contains("band")
+        // Torch
+        if (clean.contains("torch") || clean.contains("flashlight") || clean.contains("lumos")) {
+            val off = clean.contains("off") || clean.contains("band") || clean.contains("nox")
             val state = if (off) "OFF" else "ON"
             return TaskPlan(
                 originalQuery = query,
@@ -483,7 +484,124 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
 
-        if (clean.contains("back")) {
+        // Volume
+        if (clean.contains("volume") || clean.contains("awaz") || clean.contains("aawaz") || clean.contains("sound")) {
+            val direction = when {
+                clean.contains("mute") || clean.contains("silent") -> "MUTE"
+                clean.contains("kam") || clean.contains("down") || clean.contains("low") -> "DOWN"
+                else -> "UP"
+            }
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "VOLUME_$direction",
+                steps = listOf(TaskStep("vol_1", StepType.CONTROL_VOLUME, mapOf("direction" to direction, "stream" to "MEDIA"), "Volume adjust kar rahe hain")),
+                speechResponseHinglish = when(direction) { "MUTE" -> "Mute kar diya." "DOWN" -> "Volume kam kar diya." else -> "Volume badha diya." }
+            )
+        }
+
+        // WhatsApp - broader heuristic covering Hinglish variants
+        if (clean.contains("whatsapp") || (clean.contains("whats app") ) || (clean.contains("msg") && (clean.contains("mummy") || clean.contains("papa") || clean.contains("mom") || clean.contains("bhej"))) ) {
+            // Extract contact and message heuristically
+            var contact = "Mummy"
+            var message = "Hello"
+            // Common pattern: "whatsapp pe mummy ko bolo ..." or "mummy ko whatsapp karo ..."
+            val contactCandidates = listOf("mummy", "papa", "mom", "dad", "bhai", "didi", "friend", "boss", "sir")
+            for (c in contactCandidates) if (clean.contains(c)) { contact = c.replaceFirstChar { it.uppercase() }; break }
+            // If "ko" present, try to extract name before ko
+            if (clean.contains(" ko ")) {
+                val beforeKo = clean.substringBefore(" ko ").trim().split(" ").lastOrNull()
+                if (!beforeKo.isNullOrBlank() && beforeKo.length > 2) contact = beforeKo.replaceFirstChar { it.uppercase() }
+            }
+            val boloIdx = clean.indexOf("bolo")
+            val bhejoIdx = clean.indexOf("bhej")
+            val msgStart = when {
+                boloIdx != -1 -> boloIdx + 4
+                bhejoIdx != -1 -> bhejoIdx + 4
+                else -> -1
+            }
+            if (msgStart != -1 && msgStart < clean.length) {
+                message = query.substring(msgStart).trim().ifBlank { "Hello" }
+                // Clean up common prefixes
+                message = message.removePrefix("ki ").removePrefix("ke ").trim()
+            } else if (clean.contains("hello") || clean.contains("hi")) {
+                message = "Hello"
+            }
+            // Safety: truncate long message
+            if (message.length > 120) message = message.take(120)
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "WHATSAPP_${contact.uppercase()}",
+                steps = listOf(
+                    TaskStep("wa_1", StepType.FIND_CONTACT, mapOf("name" to contact), "$contact dhoond rahe hain"),
+                    TaskStep("wa_2", StepType.SEND_WHATSAPP, mapOf("contactName" to contact, "message" to message, "autoSend" to "true"), "WhatsApp message bhej rahe hain")
+                ),
+                speechResponseHinglish = "$contact ko WhatsApp pe message bhej rahi hoon: $message"
+            )
+        }
+
+        // Generic open app
+        if (clean.startsWith("open ") || clean.endsWith(" kholo") || clean.endsWith(" khol do") || clean.endsWith(" open karo") || clean.startsWith("launch ")) {
+            val appMap = mapOf(
+                "youtube" to "YouTube", "whatsapp" to "WhatsApp", "instagram" to "Instagram",
+                "chrome" to "Chrome", "camera" to "Camera", "settings" to "Settings",
+                "play store" to "Play Store", "maps" to "Maps", "photos" to "Photos",
+                "gmail" to "Gmail", "spotify" to "Spotify", "telegram" to "Telegram",
+                "calculator" to "Calculator", "clock" to "Clock", "phone" to "Phone"
+            )
+            for ((k, v) in appMap) if (clean.contains(k)) {
+                return TaskPlan(
+                    originalQuery = query,
+                    intentKey = "OPEN_${k.uppercase()}",
+                    steps = listOf(TaskStep("open_1", StepType.OPEN_APP, mapOf("appName" to v), "$v open kar rahe hain")),
+                    speechResponseHinglish = "$v open kar diya!"
+                )
+            }
+            // Fallback generic open
+            val appName = clean.replace("open", "").replace("kholo", "").replace("khol do", "").replace("launch", "").trim().ifBlank { "YouTube" }
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "OPEN_APP",
+                steps = listOf(TaskStep("open_1", StepType.OPEN_APP, mapOf("appName" to appName), "$appName open kar rahe hain")),
+                speechResponseHinglish = "$appName open kar rahi hoon."
+            )
+        }
+
+        // Navigation
+        if (clean.contains("navigate") || clean.contains("navigation") || clean.contains("rasta") || (clean.contains("chalo") && clean.contains("maps"))) {
+            var dest = clean.replace("navigate to", "").replace("navigation", "").replace("rasta dikhao", "").replace("chalo", "").replace("maps pe", "").trim()
+            if (dest.isBlank()) dest = "India Gate"
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "NAVIGATE_TO",
+                steps = listOf(TaskStep("nav_1", StepType.NAVIGATE_TO, mapOf("destination" to dest), "$dest navigation chalu kar rahe hain")),
+                speechResponseHinglish = "$dest ka navigation chalu kar diya."
+            )
+        }
+
+        // Alarm
+        if (clean.contains("alarm") || clean.contains("jagana") || clean.contains("uthana")) {
+            val (h, m) = parseTimeFromQuery(clean)
+            val timeStr = String.format(java.util.Locale.getDefault(), "%02d:%02d", h, m)
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "SET_ALARM_$timeStr",
+                steps = listOf(TaskStep("alarm_1", StepType.SET_ALARM, mapOf("hour" to h.toString(), "minute" to m.toString(), "label" to "Alarm"), "$timeStr ka alarm laga rahe hain")),
+                speechResponseHinglish = "$timeStr ka alarm set kar diya!"
+            )
+        }
+
+        // Scroll
+        if (clean.contains("scroll")) {
+            val dir = if (clean.contains("up") || clean.contains("upar")) "UP" else "DOWN"
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "SCROLL_$dir",
+                steps = listOf(TaskStep("scroll_1", StepType.ACCESSIBILITY_SCROLL, mapOf("direction" to dir), "Scroll $dir kar rahe hain")),
+                speechResponseHinglish = if (dir == "UP") "Upar scroll kar diya." else "Neeche scroll kar diya."
+            )
+        }
+
+        if (clean.contains("back") || clean == "peeche jao") {
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "GO_BACK",
@@ -533,8 +651,11 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
 
-        if (clean.contains("call")) {
-            val who = clean.replace("call", "").replace("ko", "").trim().ifBlank { "contact" }
+        if (clean.contains("call") || clean.contains("phone karo")) {
+            var who = clean.replace("call", "").replace("phone karo", "").replace("ko", "").replace("lagao", "").trim()
+            if (who.isBlank()) who = "contact"
+            // pick last word as name
+            who = who.split(" ").lastOrNull()?.ifBlank { "contact" } ?: "contact"
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "CALL_PHONE",
@@ -546,14 +667,34 @@ class LlmEngine(private val prefs: PreferencesManager) {
             )
         }
 
-        if (clean in listOf("hi", "hello", "kya kr rhi h", "kya kar rahi ho", "kaise ho")) {
+        if (clean.contains("search") || clean.contains("google karo") || clean.contains("dhundo")) {
+            val q = clean.replace("search", "").replace("google karo", "").replace("dhundo", "").trim().ifBlank { query }
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "SEARCH_WEB",
+                steps = listOf(TaskStep("search_1", StepType.SEARCH_WEB, mapOf("query" to q), "Web search kar rahe hain")),
+                speechResponseHinglish = "$q ke liye search kar rahi hoon."
+            )
+        }
+
+        if (clean in listOf("hi", "hello", "hey", "hi sara", "hello sara", "kya kr rhi h", "kya kar rahi ho", "kaise ho", "how are you")) {
             return TaskPlan(
                 originalQuery = query,
                 intentKey = "CONVERSATION",
                 steps = emptyList(),
-                speechResponseHinglish = "Main yahan hoon. Batao kya kaam karna hai?",
+                speechResponseHinglish = "Main yahan hoon, batao kya kaam karna hai?",
                 usedFallback = true,
                 fallbackReason = "Local conversation"
+            )
+        }
+
+        // Battery check
+        if (clean.contains("battery") || clean.contains("charge")) {
+            return TaskPlan(
+                originalQuery = query,
+                intentKey = "CHECK_BATTERY",
+                steps = listOf(TaskStep("bat_1", StepType.CHECK_BATTERY, emptyMap(), "Battery check kar rahe hain")),
+                speechResponseHinglish = "Battery status check kar rahi hoon."
             )
         }
 
@@ -561,9 +702,36 @@ class LlmEngine(private val prefs: PreferencesManager) {
             originalQuery = query,
             intentKey = "CONVERSATION",
             steps = emptyList(),
-            speechResponseHinglish = "Command samajh liya. Thoda specific bolo, main execute karti hoon.",
+            speechResponseHinglish = "Samajh gayi! Lekin is command ke liye internet ya API key chahiye. Settings me API key add kariye ya thoda specific task bolo jaise 'YouTube kholo' ya 'Torch on karo'.",
             usedFallback = true,
-            fallbackReason = "Local heuristic"
+            fallbackReason = "Local heuristic - no matching task"
         )
+    }
+
+    private fun parseTimeFromQuery(text: String): Pair<Int, Int> {
+        val clean = text.lowercase()
+        val isPm = clean.contains("pm") || clean.contains("sham") || clean.contains("raat") || clean.contains("dopahar")
+        val isAm = clean.contains("am") || clean.contains("subah")
+
+        val timeRegex = Regex("(\\d{1,2}):(\\d{2})")
+        val match = timeRegex.find(clean)
+        if (match != null) {
+            var h = match.groupValues[1].toIntOrNull() ?: 7
+            val m = match.groupValues[2].toIntOrNull() ?: 0
+            if (isPm && h < 12) h += 12
+            if (isAm && h == 12) h = 0
+            return Pair(h.coerceIn(0, 23), m.coerceIn(0, 59))
+        }
+
+        val digits = Regex("\\d+").findAll(clean).map { it.value.toInt() }.toList()
+        if (digits.isNotEmpty()) {
+            var h = digits[0]
+            val m = if (digits.size > 1) digits[1] else 0
+            if (isPm && h < 12) h += 12
+            if (isAm && h == 12) h = 0
+            return Pair(h.coerceIn(0, 23), m.coerceIn(0, 59))
+        }
+
+        return Pair(7, 0)
     }
 }

@@ -47,6 +47,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+object ViewModelActiveTracker {
+    @Volatile var isViewModelActive: Boolean = false
+}
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = JarvisDatabase.getInstance(application)
@@ -111,6 +115,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val interruptedTask: StateFlow<InterruptedTaskState?> = _interruptedTask.asStateFlow()
 
     init {
+        ViewModelActiveTracker.isViewModelActive = true
         migrateLegacyModelSettings()
         checkSystemPermissionsStatus()
         setInitialGreeting()
@@ -131,10 +136,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch {
+            voiceManager.isProcessing.collect { processing ->
+                _isProcessing.value = processing
+            }
+        }
 
         // Barge-in: when user speaks while SARA is speaking or executing, stop SARA immediately
         voiceManager.setInterruptionListener {
-            tts.stop()
+            if (tts.isSpeaking) {
+                Log.i("MainViewModel", "Barge-in interrupted TTS")
+                tts.stop()
+            }
         }
 
         // Voice command dispatch from UnifiedVoiceSessionManager
@@ -149,9 +162,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Listen for remote commands from Floating Orb via SaraVoiceBridge
+        // Listen for remote commands from Floating Orb via SaraVoiceBridge (fallback when VM dead -> service handles)
         viewModelScope.launch {
             com.example.audio.SaraVoiceBridge.voiceCommandRequests.collect { cmd ->
+                // Only handle via bridge if not already handled via direct listener (avoid double)
+                // The VoiceManager now routes via listener when VM alive, via bridge when dead
+                // So bridge collection here is for taps originating from floating bubble's direct emit
+                // We handle it only if it wasn't already dispatched via listener (simple dedup: if same text within 500ms, ignore is handled in VoiceManager)
                 _recognizedText.value = cmd
                 executeUserCommand(cmd)
             }
@@ -163,6 +180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 stopSaraNow()
             }
         }
+        SystemLogBus.i("MainViewModel", "ViewModel init - SARA ready. hasKey=${prefs.hasAnyApiKey()} micGranted=${_isMicGranted.value} accessibility=${JarvisAccessibilityService.isOnline}")
     }
 
     private fun migrateLegacyModelSettings() {
@@ -211,6 +229,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _hasAnyKey.value = prefs.hasAnyApiKey()
         _activePersona.value = prefs.activePersona
         _isGeminiKeyBlank.value = prefs.geminiApiKey.isBlank()
+        if (!_isMicGranted.value) {
+            SystemLogBus.w("MainViewModel", "RECORD_AUDIO not granted - voice will fail until granted")
+        }
+        if (!JarvisAccessibilityService.isOnline) {
+            SystemLogBus.w("MainViewModel", "Accessibility service OFF - automation tasks will fail")
+        }
+        if (prefs.hasAnyApiKey().not()) {
+            SystemLogBus.w("MainViewModel", "No LLM API key configured - falling back to local heuristic")
+        }
     }
 
     private var isContinuousListeningMode = false
@@ -219,6 +246,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startSingleTurnMic(onTextRecognized: (String) -> Unit) {
         singleTurnCallback = onTextRecognized
         voiceManager.startSingleTurn()
+        SystemLogBus.i("MainViewModel", "Single-turn mic started")
     }
 
     fun toggleContinuousOrbMode() {
@@ -226,31 +254,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isContinuousListeningMode = active
         if (active) {
             _saraResponse.value = "Continuous Voice Mode Active! Bolte rahiye, SARA sun rahi hai... 🎤"
+            SystemLogBus.i("MainViewModel", "Continuous mode ON")
         } else {
             _saraResponse.value = "Continuous Voice Mode off ho gaya. Tap Orb to reactivate! ✨"
+            SystemLogBus.i("MainViewModel", "Continuous mode OFF")
         }
     }
 
     fun startListening() {
+        if (!_isMicGranted.value) {
+            checkSystemPermissionsStatus()
+            if (!_isMicGranted.value) {
+                _saraResponse.value = "Mic permission chahiye! Please allow kar dijiye 🎤"
+                SystemLogBus.e("MainViewModel", "startListening blocked - no mic permission")
+                return
+            }
+        }
         singleTurnCallback = null
         voiceManager.startContinuousSession()
+        SystemLogBus.i("MainViewModel", "startListening -> continuous")
     }
 
     fun stopListening() {
-        voiceManager.stopSession()
-        tts.stop()
+        // FIXED: previously stopSession killed continuousMode permanently.
+        // Now we pause if in continuous, else stop.
+        if (voiceManager.isContinuousMode.value) {
+            voiceManager.pauseListening()
+            SystemLogBus.i("MainViewModel", "stopListening -> pause (keeping continuous)")
+        } else {
+            voiceManager.stopSession()
+            SystemLogBus.i("MainViewModel", "stopListening -> full stop")
+        }
+        // Don't force tts.stop() here unless interrupted; let TTS finish naturally
         _isListening.value = false
     }
 
     fun onActivityPaused() {
-        // Allow voice session to persist if in continuous hands-free mode
+        // Allow voice session to persist if in continuous hands-free mode - do NOT stop
+        Log.d("MainViewModel", "onActivityPaused - continuous=${voiceManager.isContinuousMode.value}")
     }
 
     private fun speakAndPromptNext(text: String, onSpeechFinished: (() -> Unit)? = null) {
-        com.example.audio.SaraVoiceBridge.updateSpeech(text)
-        tts.speak(text, apiKey = prefs.geminiApiKey, groqApiKey = prefs.groqApiKey) {
+        if (text.isBlank()) {
             onSpeechFinished?.invoke()
-            voiceManager.resumeContinuousListeningAfterSpeech()
+            return
+        }
+        com.example.audio.SaraVoiceBridge.updateSpeech(text)
+        // Mark processing true while speaking
+        voiceManager.setProcessing(true)
+        tts.speak(text, apiKey = prefs.geminiApiKey, groqApiKey = prefs.groqApiKey) {
+            // TTS done
+            voiceManager.setProcessing(false)
+            onSpeechFinished?.invoke()
+            // Only resume continuous listening if we were in continuous mode before speaking
+            if (voiceManager.isContinuousMode.value) {
+                voiceManager.resumeContinuousListeningAfterSpeech()
+            }
         }
     }
 
@@ -262,6 +321,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pendingRiskyPlan.value = null
         _interruptedTask.value = null
         _isProcessing.value = true
+        voiceManager.setProcessing(true)
 
         val startMsg = when (prefs.activePersona) {
             PersonaType.GIRLFRIEND -> "Samajh gayi! Screen par step-by-step aapka kaam kar rahi hoon 💕"
@@ -349,12 +409,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         deferred.complete(false)
                     }
                     withContext(Dispatchers.Main) {
-                        stopListening()
+                        // Don't kill continuous mode here - just pause
+                        if (voiceManager.isContinuousMode.value) voiceManager.pauseListening() else voiceManager.stopSession()
                     }
                     result
                 },
                 onComplete = { summary, success ->
                     _isProcessing.value = false
+                    voiceManager.setProcessing(false)
                     _saraResponse.value = summary
                     speakAndPromptNext(summary)
                     viewModelScope.launch {
@@ -369,7 +431,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun executeUserCommand(query: String) {
         if (query.isBlank()) return
-        stopListening()
+        // FIXED: don't kill continuous mode - just pause listening while processing
+        voiceManager.pauseListening()
+        voiceManager.setProcessing(true)
         val clean = query.trim().lowercase()
         if (clean.startsWith("agent ") || clean.startsWith("auto ") || clean.startsWith("goal ") || clean.startsWith("react ")) {
             val stripped = query.substringAfter(" ").trim()
@@ -379,15 +443,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         _recognizedText.value = query
         _pendingRiskyPlan.value = null
+        _isProcessing.value = true
 
         currentCommandJob = viewModelScope.launch {
             // Save User Interaction
             db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
+            SystemLogBus.i("MainViewModel", "Processing command: $query")
 
             // 1. Check FastPath Classifier for instant response
             val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName, context = getApplication())
             if (fastPath is FastPathResult.Handled) {
                 if (fastPath.plan.intentKey == "STOP_COMMAND") {
+                    _isProcessing.value = false
+                    voiceManager.setProcessing(false)
                     stopSaraNow()
                     return@launch
                 }
@@ -397,15 +465,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _saraResponse.value = fastPath.immediateReplyHinglish
                 speakAndPromptNext(fastPath.immediateReplyHinglish)
                 db.jarvisDao().insertLog(InteractionLog(text = fastPath.immediateReplyHinglish, isUser = false))
+                SystemLogBus.i("MainViewModel", "FastPath handled: ${fastPath.plan.intentKey}")
 
                 if (fastPath.plan.steps.isNotEmpty()) {
+                    // Check accessibility for steps that need it
+                    if (needsAccessibility(fastPath.plan) && !JarvisAccessibilityService.isOnline) {
+                        val warn = "Accessibility service OFF hai - automation ke liye ON karna padega"
+                        _saraResponse.value = warn
+                        SystemLogBus.w("MainViewModel", warn)
+                        speakAndPromptNext(warn)
+                        _isProcessing.value = false
+                        voiceManager.setProcessing(false)
+                        return@launch
+                    }
                     _interruptedTask.value = null
                     _currentTaskPlan.value = fastPath.plan
+                    _isProcessing.value = false
+                    // Keep processing flag for executor duration? Let executor handle
                     executor.executePlan(
                         plan = fastPath.plan,
                         onStepUpdated = { _currentTaskPlan.value = it },
                         onSpeak = { speakAndPromptNext(it) }
                     )
+                    voiceManager.setProcessing(false)
+                } else {
+                    _isProcessing.value = false
+                    voiceManager.setProcessing(false)
                 }
                 return@launch
             }
@@ -420,12 +505,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val response = cachedPlan.speechResponseHinglish.ifBlank { "Task execute kar rahe hain..." }
                     _saraResponse.value = response
                     _currentTaskPlan.value = cachedPlan
+                    SystemLogBus.i("MainViewModel", "Macro cache hit: $normalizedKey")
                     speakAndPromptNext(response)
+                    if (needsAccessibility(cachedPlan) && !JarvisAccessibilityService.isOnline) {
+                        val warn = "Accessibility service OFF hai - automation ke liye ON karna padega"
+                        _saraResponse.value = warn
+                        speakAndPromptNext(warn)
+                        _isProcessing.value = false
+                        voiceManager.setProcessing(false)
+                        return@launch
+                    }
+                    _isProcessing.value = false
                     executor.executePlan(
                         plan = cachedPlan,
                         onStepUpdated = { _currentTaskPlan.value = it },
                         onSpeak = { speakAndPromptNext(it) }
                     )
+                    voiceManager.setProcessing(false)
                     return@launch
                 }
             }
@@ -459,9 +555,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Clear interrupted task now that a follow-up or new plan has been formulated
                 _interruptedTask.value = null
                 _currentTaskPlan.value = plan
-                // NEW: if this reply came from the crude local fallback (real AI call failed or
-                // no key configured), say so on screen instead of silently looking like a normal
-                // reply. Speech stays natural — only the visible text gets the warning prefix.
                 val displayText = if (plan.usedFallback) {
                     if (plan.steps.isNotEmpty()) {
                         plan.speechResponseHinglish
@@ -475,12 +568,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (plan.usedFallback) {
                     SystemLogBus.w("MainViewModel", "Fallback: ${plan.fallbackReason}")
                 }
+                SystemLogBus.i("MainViewModel", "LLM plan: ${plan.intentKey} steps=${plan.steps.size} fallback=${plan.usedFallback}")
 
                 db.jarvisDao().insertLog(InteractionLog(text = displayText, isUser = false))
+
+                if (needsAccessibility(plan) && plan.steps.isNotEmpty() && !JarvisAccessibilityService.isOnline) {
+                    val warn = "Accessibility service OFF hai - task execute nahi ho payega. Settings me ON kar dijiye."
+                    _saraResponse.value = warn
+                    speakAndPromptNext(warn)
+                    voiceManager.setProcessing(false)
+                    return@onSuccess
+                }
 
                 if (plan.requiresRiskyConfirmation) {
                     _pendingRiskyPlan.value = plan
                     speakAndPromptNext(plan.confirmationPrompt)
+                    voiceManager.setProcessing(false)
                 } else {
                     speakAndPromptNext(plan.speechResponseHinglish)
                     if (plan.steps.isNotEmpty()) {
@@ -490,13 +593,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             onSpeak = { speakAndPromptNext(it) }
                         )
                     }
+                    voiceManager.setProcessing(false)
                 }
             }.onFailure { err ->
                 val errorHinglish = "Kuch issue hua: ${err.message ?: "Connection error"}. Kya aap dobara bol sakte hain?"
                 _saraResponse.value = errorHinglish
                 SystemLogBus.e("MainViewModel", "Command failed: ${err.message ?: "unknown"}")
                 speakAndPromptNext(errorHinglish)
+                voiceManager.setProcessing(false)
+                _isProcessing.value = false
             }
+        }
+    }
+
+    private fun needsAccessibility(plan: TaskPlan): Boolean {
+        return plan.steps.any {
+            it.type == StepType.ACCESSIBILITY_TAP_TEXT ||
+            it.type == StepType.ACCESSIBILITY_TAP_COORDS ||
+            it.type == StepType.ACCESSIBILITY_TYPE ||
+            it.type == StepType.ACCESSIBILITY_GLOBAL ||
+            it.type == StepType.ACCESSIBILITY_SCROLL ||
+            it.type == StepType.VISION_INSPECT_AND_TAP
         }
     }
 
@@ -505,6 +622,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pendingRiskyPlan.value = null
         if (confirmed) {
             viewModelScope.launch {
+                if (needsAccessibility(plan) && !JarvisAccessibilityService.isOnline) {
+                    val warn = "Accessibility service OFF - risky action execute nahi ho payega"
+                    _saraResponse.value = warn
+                    speakAndPromptNext(warn)
+                    return@launch
+                }
                 executor.proceedExecution(
                     plan = plan,
                     onStepUpdated = { _currentTaskPlan.value = it },
@@ -530,12 +653,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val interrupted = executor.interruptCurrentExecution()
         if (interrupted != null) {
             _interruptedTask.value = interrupted
+            SystemLogBus.w("MainViewModel", "Task interrupted at step ${interrupted.stoppedStepIndex}")
         }
         currentCommandJob?.cancel()
         agentLoop.cancel()
         tts.stop()
         voiceManager.stopSession()
         _isProcessing.value = false
+        voiceManager.setProcessing(false)
         _isListening.value = false
         _pendingRiskyPlan.value = null
 
@@ -545,6 +670,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             PersonaType.BOLD -> if (interrupted != null) "Task rok diya. Aage badhana hai toh bolo!" else "Ruk gayi. Bolo agla kaam kya hai!"
         }
         _saraResponse.value = stopReply
+        // Don't auto speak stopReply via TTS that would be interrupted again - but we already stopped TTS, so speak now
+        // Use direct speak without resume
+        tts.speak(stopReply, apiKey = prefs.geminiApiKey) {}
     }
 
     /** Resumes the remaining steps of the paused/interrupted task */
@@ -556,6 +684,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val doneMsg = "Yeh task pehle hi complete ho gaya tha!"
             _saraResponse.value = doneMsg
             speakAndPromptNext(doneMsg)
+            return
+        }
+        if (needsAccessibility(interrupted.plan) && !JarvisAccessibilityService.isOnline) {
+            val warn = "Accessibility service OFF hai - resume nahi ho payega"
+            _saraResponse.value = warn
+            speakAndPromptNext(warn)
             return
         }
 
@@ -585,18 +719,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissInterruptedTask() {
         _interruptedTask.value = null
         executor.resetActivePlan()
+        SystemLogBus.i("MainViewModel", "Interrupted task dismissed")
     }
 
     /** NEW: Clears the visible chat/interaction log only — learned memory is untouched. */
     fun clearChatHistory() {
         viewModelScope.launch {
             db.jarvisDao().clearLogs()
+            SystemLogBus.i("MainViewModel", "Chat history cleared")
         }
     }
 
     fun setPersona(persona: PersonaType) {
         prefs.activePersona = persona
         _activePersona.value = persona
+        SystemLogBus.i("MainViewModel", "Persona switched to ${persona.displayName}")
     }
 
     fun saveSettings(
@@ -606,7 +743,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferredLlm: String,
         assistantName: String,
         persona: PersonaType,
-        geminiModel: String = "gemini-3.5-flash",
+        geminiModel: String = "gemini-2.5-flash",
         groqModel: String = "llama-3.1-8b-instant",
         openRouterModel: String = "openai/gpt-4o-mini",
         openAiKey: String = "",
@@ -623,7 +760,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.openAiApiKey = openAiKey.trim()
         prefs.openAiBaseUrl = openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" }
         prefs.openAiModel = openAiModel.trim().ifBlank { "gpt-4.1-mini" }
-        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-3.5-flash" }
+        prefs.geminiModel = geminiModel.trim().ifBlank { "gemini-2.5-flash" }
         prefs.groqModel = groqModel.trim().ifBlank { "llama-3.1-8b-instant" }
         prefs.openRouterModel = openRouterModel.trim().ifBlank { "openai/gpt-4o-mini" }
         prefs.preferredLlm = preferredLlm
@@ -637,6 +774,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _activePersona.value = persona
         _hasAnyKey.value = prefs.hasAnyApiKey()
         _isGeminiKeyBlank.value = prefs.geminiApiKey.isBlank()
+        SystemLogBus.i("MainViewModel", "Settings saved. hasKey=${prefs.hasAnyApiKey()} preferred=$preferredLlm")
 
         val reply = "Settings update ho gayi hain! SARA is configured with the latest smart models."
         _saraResponse.value = reply
@@ -663,10 +801,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .build()
                 val resp = client.newCall(req).execute()
                 val status = "HTTP ${resp.code} ${resp.message.ifBlank { if (resp.code == 200) "OK" else "" }}".trim()
+                SystemLogBus.i("MainViewModel", "Gemini test: $status")
                 withContext(Dispatchers.Main) {
                     onResult(status)
                 }
             } catch (e: Exception) {
+                SystemLogBus.e("MainViewModel", "Gemini test failed: ${e.message}")
                 withContext(Dispatchers.Main) {
                     onResult("Error: ${e.message ?: "Failed"}")
                 }
@@ -685,8 +825,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 context.startService(intent)
             }
+            SystemLogBus.i("MainViewModel", "Floating bubble enabled")
         } else {
             context.stopService(intent)
+            SystemLogBus.i("MainViewModel", "Floating bubble disabled")
         }
         checkSystemPermissionsStatus()
     }
@@ -699,6 +841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (fact.isBlank()) return
         viewModelScope.launch {
             db.jarvisDao().insertMemory(UserMemory(fact = fact, category = category))
+            SystemLogBus.i("MainViewModel", "Memory added: $fact")
         }
     }
 
@@ -740,6 +883,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun runMacroDirect(macro: MacroCache) {
         val plan = TaskPlan.fromJsonString(macro.taskGraphJson) ?: return
+        if (needsAccessibility(plan) && !JarvisAccessibilityService.isOnline) {
+            val warn = "Accessibility service OFF hai - macro execute nahi ho payega"
+            _saraResponse.value = warn
+            speakAndPromptNext(warn)
+            return
+        }
         _recognizedText.value = macro.taskDescription
         _saraResponse.value = "Executing cached macro: ${macro.taskDescription}"
         _currentTaskPlan.value = plan
@@ -805,7 +954,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        voiceManager.stopSession()
+        ViewModelActiveTracker.isViewModelActive = false
+        voiceManager.clearCommandListener()
+        voiceManager.pauseListening()
         tts.shutdown()
+        SystemLogBus.i("MainViewModel", "ViewModel cleared")
     }
 }

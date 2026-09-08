@@ -7,6 +7,7 @@ import com.example.data.db.JarvisAlarm
 import com.example.data.db.JarvisDatabase
 import com.example.data.db.MacroCache
 import com.example.data.db.UserMemory
+import com.example.debug.SystemLogBus
 import com.example.service.JarvisAccessibilityService
 import com.example.util.DeviceActionHelper
 import kotlinx.coroutines.delay
@@ -68,12 +69,21 @@ class TaskExecutor(
         onSpeak: (String) -> Unit
     ) {
         stepContext.clear()
+        SystemLogBus.i("TaskExecutor", "executePlan: ${plan.intentKey} steps=${plan.steps.size} query='${plan.originalQuery}'")
 
         // 1. Check if Risky Confirmation is required (Payments / Deletions)
         if (plan.requiresRiskyConfirmation && plan.confirmationPrompt.isNotBlank()) {
             _executionState.value = ExecutionState.AwaitingConfirmation(plan, plan.confirmationPrompt)
+            SystemLogBus.w("TaskExecutor", "Awaiting confirmation: ${plan.confirmationPrompt}")
             onSpeak(plan.confirmationPrompt)
             return
+        }
+
+        // Pre-check accessibility for plans that need it
+        val needsA11y = plan.steps.any { it.type in listOf(StepType.ACCESSIBILITY_TAP_TEXT, StepType.ACCESSIBILITY_TAP_COORDS, StepType.ACCESSIBILITY_TYPE, StepType.ACCESSIBILITY_GLOBAL, StepType.ACCESSIBILITY_SCROLL, StepType.VISION_INSPECT_AND_TAP) }
+        if (needsA11y && !JarvisAccessibilityService.isOnline) {
+            SystemLogBus.e("TaskExecutor", "Accessibility service offline but plan requires it")
+            Log.w("TaskExecutor", "Accessibility offline - plan will attempt but may fail")
         }
 
         proceedExecution(plan, onStepUpdated, onSpeak)
@@ -379,8 +389,13 @@ class TaskExecutor(
                     val text = step.params["text"] ?: ""
                     val service = JarvisAccessibilityService.instance
                     if (service != null && text.isNotBlank()) {
-                        service.clickNodeByTextStrict(text) || service.clickNodeByText(text)
-                    } else false
+                        val ok = service.clickNodeByTextStrict(text) || service.clickNodeByText(text)
+                        if (!ok) SystemLogBus.w("TaskExecutor", "Tap text failed: '$text'")
+                        ok
+                    } else {
+                        SystemLogBus.e("TaskExecutor", "Tap text failed - accessibility OFF or empty text: '$text'")
+                        false
+                    }
                 }
 
                 StepType.ACCESSIBILITY_TAP_COORDS -> {
@@ -389,7 +404,10 @@ class TaskExecutor(
                     val service = JarvisAccessibilityService.instance
                     if (service != null) {
                         service.clickCoordinates(x, y)
-                    } else false
+                    } else {
+                        SystemLogBus.e("TaskExecutor", "Tap coords failed - accessibility OFF")
+                        false
+                    }
                 }
 
                 StepType.ACCESSIBILITY_TYPE -> {
@@ -397,15 +415,20 @@ class TaskExecutor(
                     val targetHint = step.params["targetHint"]
                     val service = JarvisAccessibilityService.instance
                     if (service != null && text.isNotBlank()) {
-                        service.inputText(text, targetHint)
-                    } else false
+                        val ok = service.inputText(text, targetHint)
+                        if (!ok) SystemLogBus.w("TaskExecutor", "Type failed: '$text'")
+                        ok
+                    } else {
+                        SystemLogBus.e("TaskExecutor", "Type failed - accessibility OFF or empty")
+                        false
+                    }
                 }
 
                 StepType.ACCESSIBILITY_GLOBAL -> {
                     val action = step.params["action"]?.uppercase() ?: "HOME"
                     val service = JarvisAccessibilityService.instance
                     if (service != null) {
-                        when (action) {
+                        val ok = when (action) {
                             "HOME" -> service.performHome()
                             "BACK" -> service.performBack()
                             "RECENTS" -> service.performRecents()
@@ -414,15 +437,25 @@ class TaskExecutor(
                             "SCREENSHOT" -> service.performScreenshot()
                             else -> service.performHome()
                         }
-                    } else false
+                        if (!ok) SystemLogBus.w("TaskExecutor", "Global action $action failed")
+                        ok
+                    } else {
+                        SystemLogBus.e("TaskExecutor", "Global action $action failed - accessibility OFF")
+                        false
+                    }
                 }
 
                 StepType.ACCESSIBILITY_SCROLL -> {
                     val dir = step.params["direction"]?.uppercase() ?: "DOWN"
                     val service = JarvisAccessibilityService.instance
                     if (service != null) {
-                        if (dir == "UP") service.scrollUp() else service.scrollDown()
-                    } else false
+                        val ok = if (dir == "UP") service.scrollUp() else service.scrollDown()
+                        if (!ok) SystemLogBus.w("TaskExecutor", "Scroll $dir failed")
+                        ok
+                    } else {
+                        SystemLogBus.e("TaskExecutor", "Scroll $dir failed - accessibility OFF")
+                        false
+                    }
                 }
 
                 StepType.VISION_INSPECT_AND_TAP -> {

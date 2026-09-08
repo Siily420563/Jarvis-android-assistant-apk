@@ -1,44 +1,33 @@
 package com.example.service
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.audio.JarvisSpeechSynthesizer
-import com.example.data.db.InteractionLog
 import com.example.data.db.JarvisDatabase
 import com.example.data.prefs.PreferencesManager
-import com.example.engine.FastPathClassifier
-import com.example.engine.FastPathResult
-import com.example.engine.LlmEngine
-import com.example.engine.StepStatus
+import com.example.debug.SystemLogBus
 import com.example.engine.TaskExecutor
-import com.example.ui.components.FloatingOrbCanvasView
 import com.example.ui.components.ElementHighlightOverlay
+import com.example.ui.components.FloatingOrbCanvasView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,7 +47,7 @@ class JarvisFloatingBubbleService : Service() {
     private var highlightOverlay: ElementHighlightOverlay? = null
 
     private lateinit var prefs: PreferencesManager
-    private lateinit var llmEngine: LlmEngine
+    private lateinit var llmEngine: com.example.engine.LlmEngine
     private lateinit var tts: JarvisSpeechSynthesizer
     private lateinit var db: JarvisDatabase
     private lateinit var executor: TaskExecutor
@@ -80,7 +69,7 @@ class JarvisFloatingBubbleService : Service() {
         super.onCreate()
         try {
             prefs = PreferencesManager(this)
-            llmEngine = LlmEngine(prefs)
+            llmEngine = com.example.engine.LlmEngine(prefs)
             tts = JarvisSpeechSynthesizer(this)
             db = JarvisDatabase.getInstance(this)
             executor = TaskExecutor(this, db, llmEngine)
@@ -90,8 +79,11 @@ class JarvisFloatingBubbleService : Service() {
             startForegroundServiceNotification()
             setupFloatingOrb()
             setupVoiceStateObservation()
+            setupFallbackCommandHandling()
+            SystemLogBus.i("SaraFloating", "Floating service created - orb ready")
         } catch (e: Exception) {
             Log.e("SaraFloating", "Error in onCreate", e)
+            SystemLogBus.e("SaraFloating", "onCreate failed: ${e.message}")
         }
     }
 
@@ -108,6 +100,117 @@ class JarvisFloatingBubbleService : Service() {
                 mainHandler.post {
                     orbView?.isProcessing = processing
                 }
+            }
+        }
+        scope.launch {
+            voiceManager.isContinuousMode.collect { continuous ->
+                mainHandler.post {
+                    // Update orb sleep state to reflect continuous mode
+                    if (continuous) {
+                        orbView?.isAsleep = false
+                        isAsleep = false
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Fallback: When MainViewModel is dead (app in background), floating service itself
+     * executes commands via its own executor so voice still works.
+     * When ViewModel is alive, ViewModel handles commands - we skip to avoid double execution.
+     */
+    private fun setupFallbackCommandHandling() {
+        scope.launch {
+            com.example.audio.SaraVoiceBridge.voiceCommandRequests.collect { cmd ->
+                // If ViewModel is active, let it handle (avoid double)
+                if (com.example.ui.ViewModelActiveTracker.isViewModelActive) {
+                    Log.d("SaraFloating", "ViewModel active - skipping fallback execution for: $cmd")
+                    return@collect
+                }
+                Log.i("SaraFloating", "Fallback execution (VM dead): $cmd")
+                SystemLogBus.i("SaraFloating", "Executing fallback: $cmd")
+                orbView?.isProcessing = true
+                voiceManager.setProcessing(true)
+                cancelAutoSleepTimer()
+                // Use TaskExecutor fallback: route via LlmEngine heuristic/local
+                // For minimal duplication, reuse similar logic to MainViewModel but simplified
+                // We will directly request via bridge? No, we execute here.
+                // To avoid duplicating LLM logic, we delegate to a simple heuristic via executor
+                // For now, handle via llmEngine planAndQuery and executor
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val recent = try { db.jarvisDao().getRecentLogs(5).reversed().joinToString("\n") { if(it.isUser) "User:${it.text}" else "SARA:${it.text}" } } catch(_:Exception){""}
+                        val memStr = try { db.jarvisDao().getMemoriesList().take(5).joinToString("\n") { "- ${it.fact}" } } catch(_:Exception){""}
+                        val alarmStr = try { db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute}" } } catch(_:Exception){""}
+                        val planResult = llmEngine.planAndQuery(cmd, memStr, alarmStr, "", recent, null)
+                        planResult.onSuccess { plan ->
+                            launch(Dispatchers.Main) {
+                                if (plan.requiresRiskyConfirmation) {
+                                    val prompt = plan.confirmationPrompt.ifBlank { "Confirm?" }
+                                    tts.speak(prompt, apiKey = prefs.geminiApiKey) {}
+                                    voiceManager.setProcessing(false)
+                                    orbView?.isProcessing = false
+                                    return@launch
+                                }
+                                // Speak first
+                                tts.speak(plan.speechResponseHinglish, apiKey = prefs.geminiApiKey) {
+                                    if (isSessionActive && !isAsleep) voiceManager.resumeContinuousListeningAfterSpeech()
+                                }
+                                if (plan.steps.isNotEmpty()) {
+                                    // Check accessibility
+                                    if (plan.steps.any { it.type.name.startsWith("ACCESSIBILITY") || it.type.name == "VISION_INSPECT_AND_TAP" } && !JarvisAccessibilityService.isOnline) {
+                                        val warn = "Accessibility service OFF hai"
+                                        tts.speak(warn, apiKey = prefs.geminiApiKey) {}
+                                        voiceManager.setProcessing(false)
+                                        orbView?.isProcessing = false
+                                        return@launch
+                                    }
+                                    launch(Dispatchers.IO) {
+                                        executor.executePlan(plan, onStepUpdated = { }, onSpeak = { msg ->
+                                            launch(Dispatchers.Main) { tts.speak(msg, apiKey = prefs.geminiApiKey) {} }
+                                        })
+                                        launch(Dispatchers.Main) {
+                                            voiceManager.setProcessing(false)
+                                            orbView?.isProcessing = false
+                                            if (isSessionActive && !isAsleep) resetAutoSleepTimer()
+                                        }
+                                    }
+                                } else {
+                                    voiceManager.setProcessing(false)
+                                    orbView?.isProcessing = false
+                                    if (isSessionActive && !isAsleep) resetAutoSleepTimer()
+                                }
+                                // log
+                                try { db.jarvisDao().insertLog(com.example.data.db.InteractionLog(text = plan.speechResponseHinglish, isUser = false)) } catch(_:Exception){}
+                            }
+                        }.onFailure { err ->
+                            launch(Dispatchers.Main) {
+                                val msg = "Error: ${err.message}"
+                                tts.speak(msg, apiKey = prefs.geminiApiKey) {}
+                                voiceManager.setProcessing(false)
+                                orbView?.isProcessing = false
+                            }
+                        }
+                        try { db.jarvisDao().insertLog(com.example.data.db.InteractionLog(text = cmd, isUser = true)) } catch(_:Exception){}
+                    } catch (e: Exception) {
+                        Log.e("SaraFloating", "Fallback execution failed", e)
+                        launch(Dispatchers.Main) {
+                            voiceManager.setProcessing(false)
+                            orbView?.isProcessing = false
+                        }
+                    }
+                }
+            }
+        }
+        scope.launch {
+            com.example.audio.SaraVoiceBridge.stopRequests.collect {
+                Log.i("SaraFloating", "Stop request via bridge")
+                tts.stop()
+                voiceManager.setProcessing(false)
+                orbView?.isProcessing = false
+                executor.interruptCurrentExecution()
+                agentLoop.cancel()
             }
         }
     }
@@ -172,6 +275,7 @@ class JarvisFloatingBubbleService : Service() {
     private fun setupFloatingOrb() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             Log.w("SaraFloating", "Overlay permission not granted. Cannot attach orb view.")
+            SystemLogBus.w("SaraFloating", "Overlay permission missing")
             return
         }
 
@@ -270,36 +374,62 @@ class JarvisFloatingBubbleService : Service() {
             } catch (e: Exception) {
                 Log.w("SaraFloating", "Unable to add highlight overlay: ${e.message}")
             }
+            SystemLogBus.i("SaraFloating", "Orb view attached")
         } catch (e: Exception) {
             Log.e("SaraFloating", "Error adding floating orb view", e)
+            SystemLogBus.e("SaraFloating", "Orb attach failed: ${e.message}")
         }
     }
 
     private fun onOrbTapped() {
+        Log.i("SaraFloating", "Orb tapped processing=${voiceManager.isProcessing.value} asleep=$isAsleep")
         if (voiceManager.isProcessing.value) {
             // Emergency Stop: user tapped while processing/executing
             com.example.audio.SaraVoiceBridge.requestStop()
             voiceManager.setProcessing(false)
             tts.stop()
-            speakAndResumeSession("Stopped.")
+            executor.interruptCurrentExecution()
+            agentLoop.cancel()
+            speakAndResumeSession("Stopped. Batao agla kaam kya hai?")
+            orbView?.isProcessing = false
             return
         }
 
         if (isAsleep) {
             // Currently asleep -> wake up and resume continuous listening
+            SystemLogBus.i("SaraFloating", "Orb wakeup")
             wakeUpAndStartListening()
         } else {
-            tts.stop()
-            enterSleepState()
+            // If listening, pause; if not, start listening
+            if (voiceManager.isListening.value) {
+                tts.stop()
+                voiceManager.pauseListening()
+                orbView?.isListening = false
+                SystemLogBus.i("SaraFloating", "Orb paused listening")
+            } else if (voiceManager.isContinuousMode.value) {
+                // Already continuous but not listening (gap) -> resume
+                voiceManager.startContinuousSession()
+                resetAutoSleepTimer()
+            } else {
+                tts.stop()
+                enterSleepState()
+            }
         }
     }
 
     private fun wakeUpAndStartListening() {
+        // Check mic permission first
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            SystemLogBus.e("SaraFloating", "Mic permission missing - cannot wake")
+            tts.speak("Mic permission chahiye!", apiKey = prefs.geminiApiKey) {}
+            return
+        }
         isAsleep = false
         isSessionActive = true
         orbView?.isAsleep = false
         resetAutoSleepTimer()
         voiceManager.startContinuousSession()
+        SystemLogBus.i("SaraFloating", "Wakeup -> continuous listening")
     }
 
     private fun enterSleepState() {
@@ -309,6 +439,7 @@ class JarvisFloatingBubbleService : Service() {
         orbView?.isListening = false
         orbView?.isProcessing = false
         Log.i("SaraFloating", "Orb entered idle sleep state to conserve battery")
+        SystemLogBus.i("SaraFloating", "Orb sleep")
     }
 
     private fun resetAutoSleepTimer() {
@@ -318,14 +449,6 @@ class JarvisFloatingBubbleService : Service() {
 
     private fun cancelAutoSleepTimer() {
         mainHandler.removeCallbacks(autoSleepRunnable)
-    }
-
-    private fun handleUserVoiceCommand(query: String) {
-        orbView?.isProcessing = true
-        cancelAutoSleepTimer()
-
-        // Route command to the centralized MainViewModel via SaraVoiceBridge so exactly one execution path runs
-        com.example.audio.SaraVoiceBridge.requestVoiceCommand(query)
     }
 
     private fun speakAndResumeSession(text: String, onSpeechFinished: (() -> Unit)? = null) {
@@ -351,5 +474,6 @@ class JarvisFloatingBubbleService : Service() {
             try { windowManager?.removeView(it) } catch (e: Exception) {}
         }
         tts.shutdown()
+        SystemLogBus.i("SaraFloating", "Floating service destroyed")
     }
 }
