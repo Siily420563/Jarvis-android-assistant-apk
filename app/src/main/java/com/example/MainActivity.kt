@@ -66,10 +66,30 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val contactsPermissionLauncher = rememberLauncherForActivityResult(
+                val allPermissionsLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestMultiplePermissions()
                 ) { _ ->
                     viewModel.checkSystemPermissionsStatus()
+                }
+
+                // Proactively request runtime permissions on first launch
+                LaunchedEffect(Unit) {
+                    val permissionsNeeded = mutableListOf<String>()
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.RECORD_AUDIO)
+                    }
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.READ_CONTACTS)
+                    }
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.CALL_PHONE)
+                    }
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                        permissionsNeeded.add(Manifest.permission.SEND_SMS)
+                    }
+                    if (permissionsNeeded.isNotEmpty()) {
+                        allPermissionsLauncher.launch(permissionsNeeded.toTypedArray())
+                    }
                 }
 
                 MainScreenContent(
@@ -78,7 +98,7 @@ class MainActivity : ComponentActivity() {
                         micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     },
                     onRequestContactsPermission = {
-                        contactsPermissionLauncher.launch(
+                        allPermissionsLauncher.launch(
                             arrayOf(
                                 Manifest.permission.READ_CONTACTS,
                                 Manifest.permission.CALL_PHONE,

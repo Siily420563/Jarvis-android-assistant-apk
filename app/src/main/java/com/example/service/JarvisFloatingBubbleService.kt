@@ -66,10 +66,9 @@ class JarvisFloatingBubbleService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var speechRecognizer: SpeechRecognizer? = null
     private var isSessionActive = false
-    private var isCurrentlyListening = false
     private var isAsleep = false
+    private lateinit var voiceManager: com.example.audio.UnifiedVoiceSessionManager
 
     private val autoSleepRunnable = Runnable {
         enterSleepState()
@@ -86,11 +85,30 @@ class JarvisFloatingBubbleService : Service() {
             db = JarvisDatabase.getInstance(this)
             executor = TaskExecutor(this, db, llmEngine)
             agentLoop = com.example.brain.AgentLoop(this, db, prefs, llmEngine)
+            voiceManager = com.example.audio.UnifiedVoiceSessionManager.getInstance(this)
 
             startForegroundServiceNotification()
             setupFloatingOrb()
+            setupVoiceStateObservation()
         } catch (e: Exception) {
             Log.e("SaraFloating", "Error in onCreate", e)
+        }
+    }
+
+    private fun setupVoiceStateObservation() {
+        scope.launch {
+            voiceManager.isListening.collect { listening ->
+                mainHandler.post {
+                    orbView?.isListening = listening
+                }
+            }
+        }
+        scope.launch {
+            voiceManager.isProcessing.collect { processing ->
+                mainHandler.post {
+                    orbView?.isProcessing = processing
+                }
+            }
         }
     }
 
@@ -257,106 +275,18 @@ class JarvisFloatingBubbleService : Service() {
         }
     }
 
-    private fun initSpeechRecognizer() {
-        val hasMic = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasMic) {
-            Log.w("SaraFloating", "RECORD_AUDIO permission missing.")
-            return
-        }
-
-        try {
-            if (speechRecognizer != null) {
-                try { speechRecognizer?.destroy() } catch (e: Exception) {}
-                speechRecognizer = null
-            }
-
-            if (SpeechRecognizer.isRecognitionAvailable(this)) {
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-                    setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) {
-                            isCurrentlyListening = true
-                            orbView?.isListening = true
-                            resetAutoSleepTimer()
-                        }
-
-                        override fun onBeginningOfSpeech() {
-                            isCurrentlyListening = true
-                            orbView?.isListening = true
-                            cancelAutoSleepTimer()
-                        }
-
-                        override fun onRmsChanged(rmsdB: Float) {}
-                        override fun onBufferReceived(buffer: ByteArray?) {}
-
-                        override fun onEndOfSpeech() {
-                            isCurrentlyListening = false
-                            orbView?.isListening = false
-                            orbView?.isProcessing = true
-                        }
-
-                        override fun onError(error: Int) {
-                            isCurrentlyListening = false
-                            orbView?.isListening = false
-                            com.example.audio.MicArbiter.release("orb")
-                            Log.w("SaraFloating", "Speech error code: $error")
-                            if (isSessionActive && !isAsleep) {
-                                resetAutoSleepTimer()
-                                mainHandler.postDelayed({
-                                    if (isSessionActive && !isAsleep && !isCurrentlyListening) {
-                                        startListeningLoop()
-                                    }
-                                }, 1000)
-                            }
-                        }
-
-                        override fun onResults(results: Bundle?) {
-                            isCurrentlyListening = false
-                            orbView?.isListening = false
-                            com.example.audio.MicArbiter.release("orb")
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            if (!matches.isNullOrEmpty()) {
-                                val query = matches[0]
-                                handleUserVoiceCommand(query)
-                            } else if (isSessionActive && !isAsleep) {
-                                resetAutoSleepTimer()
-                                mainHandler.postDelayed({
-                                    if (isSessionActive && !isAsleep && !isCurrentlyListening) {
-                                        startListeningLoop()
-                                    }
-                                }, 800)
-                            }
-                        }
-
-                        override fun onPartialResults(partialResults: Bundle?) {
-                            cancelAutoSleepTimer()
-                        }
-
-                        override fun onEvent(eventType: Int, params: Bundle?) {}
-                    })
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("SaraFloating", "SpeechRecognizer init failed", e)
-        }
-    }
-
     private fun onOrbTapped() {
-        if (orbView?.isProcessing == true) {
+        if (voiceManager.isProcessing.value) {
             // Emergency Stop: user tapped while processing/executing
-            agentLoop.cancel()
-            executor.interruptCurrentExecution()
+            com.example.audio.SaraVoiceBridge.requestStop()
+            voiceManager.setProcessing(false)
             tts.stop()
-            orbView?.isProcessing = false
             speakAndResumeSession("Stopped.")
             return
         }
 
         if (isAsleep) {
-            // Currently asleep -> wake up and resume listening
+            // Currently asleep -> wake up and resume continuous listening
             wakeUpAndStartListening()
         } else {
             tts.stop()
@@ -369,13 +299,12 @@ class JarvisFloatingBubbleService : Service() {
         isSessionActive = true
         orbView?.isAsleep = false
         resetAutoSleepTimer()
-        startListeningLoop()
+        voiceManager.startContinuousSession()
     }
 
     private fun enterSleepState() {
-        if (!isSessionActive) return
         isAsleep = true
-        stopListeningLoop()
+        voiceManager.pauseListening()
         orbView?.isAsleep = true
         orbView?.isListening = false
         orbView?.isProcessing = false
@@ -391,134 +320,12 @@ class JarvisFloatingBubbleService : Service() {
         mainHandler.removeCallbacks(autoSleepRunnable)
     }
 
-    private fun startListeningLoop() {
-        val hasMic = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasMic) return
-
-        if (speechRecognizer == null) {
-            initSpeechRecognizer()
-        }
-
-        if (!com.example.audio.MicArbiter.acquire("orb")) {
-            // The in-app mic already owns the session right now - back off and
-            // try again shortly instead of starting a competing recognizer
-            // (this backing-off, instead of blind-retrying, is what actually
-            // breaks the on/off loop).
-            mainHandler.postDelayed({
-                if (isSessionActive && !isAsleep && !isCurrentlyListening) {
-                    startListeningLoop()
-                }
-            }, 1500)
-            return
-        }
-
-        val recognizer = speechRecognizer ?: run {
-            com.example.audio.MicArbiter.release("orb")
-            return
-        }
-        try {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                // en-IN as the PRIMARY language gives back Romanized ("Hinglish") text
-                // even for Hindi speech, instead of Devanagari script.
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
-                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
-            }
-            recognizer.startListening(intent)
-            orbView?.isListening = true
-        } catch (e: Exception) {
-            com.example.audio.MicArbiter.release("orb")
-            Log.e("SaraFloating", "Error starting listening", e)
-        }
-    }
-
-    private fun stopListeningLoop() {
-        try {
-            speechRecognizer?.stopListening()
-        } catch (e: Exception) {}
-        com.example.audio.MicArbiter.release("orb")
-        isCurrentlyListening = false
-        orbView?.isListening = false
-    }
-
     private fun handleUserVoiceCommand(query: String) {
         orbView?.isProcessing = true
         cancelAutoSleepTimer()
 
-        scope.launch {
-            try {
-                db.jarvisDao().insertLog(InteractionLog(text = query, isUser = true))
-
-                val fastPath = FastPathClassifier.classify(query, prefs.activePersona, prefs.assistantName, context = this@JarvisFloatingBubbleService)
-                if (fastPath is FastPathResult.Handled) {
-                    if (fastPath.plan.intentKey == "STOP_COMMAND") {
-                        tts.stop()
-                        executor.interruptCurrentExecution()
-                        speakAndResumeSession(fastPath.immediateReplyHinglish)
-                        return@launch
-                    }
-                    if (fastPath.switchPersona != null) {
-                        prefs.activePersona = fastPath.switchPersona
-                        orbView?.persona = fastPath.switchPersona
-                    }
-                    speakAndResumeSession(fastPath.immediateReplyHinglish) {
-                        if (fastPath.plan.steps.isNotEmpty()) {
-                            scope.launch {
-                                executor.executePlan(
-                                    plan = fastPath.plan,
-                                    onStepUpdated = { },
-                                    onSpeak = { speakAndResumeSession(it) }
-                                )
-                            }
-                        }
-                    }
-                    return@launch
-                }
-
-                val memories = db.jarvisDao().getMemoriesList().joinToString("\n") { "- ${it.fact}" }
-                val alarms = db.jarvisDao().getActiveAlarmsList().joinToString("\n") { "- ${it.hour}:${it.minute} (${it.label})" }
-                val screenContext = JarvisAccessibilityService.instance?.getScreenHierarchySummary() ?: ""
-
-                val recentLogs = db.jarvisDao().getRecentLogs(8).reversed()
-                val historyStr = recentLogs.joinToString("\n") { if (it.isUser) "User: ${it.text}" else "SARA: ${it.text}" }
-
-                val result = llmEngine.planAndQuery(query, memories, alarms, screenContext, historyStr, null)
-                orbView?.isProcessing = false
-
-                result.onSuccess { plan ->
-                    val displayText = if (plan.usedFallback) {
-                        "⚠️ [Fallback mode: ${plan.fallbackReason}]\n${plan.speechResponseHinglish}"
-                    } else plan.speechResponseHinglish
-                    db.jarvisDao().insertLog(InteractionLog(text = displayText, isUser = false))
-
-                    speakAndResumeSession(plan.speechResponseHinglish) {
-                        if (plan.steps.isNotEmpty()) {
-                            scope.launch {
-                                executor.executePlan(
-                                    plan = plan,
-                                    onStepUpdated = { },
-                                    onSpeak = { speakAndResumeSession(it) }
-                                )
-                            }
-                        }
-                    }
-                }.onFailure { err ->
-                    val errorMsg = err.message ?: "[Error: AI Service Unavailable]"
-                    speakAndResumeSession(errorMsg)
-                }
-            } catch (e: Exception) {
-                Log.e("SaraFloating", "Error executing voice command", e)
-                val fallbackMsg = "[Error: Command execution failed]"
-                speakAndResumeSession(fallbackMsg)
-            } finally {
-                orbView?.isProcessing = false
-            }
-        }
+        // Route command to the centralized MainViewModel via SaraVoiceBridge so exactly one execution path runs
+        com.example.audio.SaraVoiceBridge.requestVoiceCommand(query)
     }
 
     private fun speakAndResumeSession(text: String, onSpeechFinished: (() -> Unit)? = null) {
@@ -526,11 +333,7 @@ class JarvisFloatingBubbleService : Service() {
             onSpeechFinished?.invoke()
             if (isSessionActive && !isAsleep) {
                 resetAutoSleepTimer()
-                mainHandler.postDelayed({
-                    if (isSessionActive && !isAsleep && !isCurrentlyListening) {
-                        startListeningLoop()
-                    }
-                }, 600)
+                voiceManager.resumeContinuousListeningAfterSpeech()
             }
         }
     }
@@ -539,11 +342,6 @@ class JarvisFloatingBubbleService : Service() {
         super.onDestroy()
         isSessionActive = false
         cancelAutoSleepTimer()
-        stopListeningLoop()
-        try {
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-        } catch (e: Exception) {}
         highlightOverlay?.let {
             try { windowManager?.removeView(it) } catch (e: Exception) {}
             highlightOverlay = null

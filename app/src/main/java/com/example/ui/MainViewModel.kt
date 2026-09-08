@@ -55,8 +55,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tts = JarvisSpeechSynthesizer(application)
     val executor = TaskExecutor(application, db, llmEngine)
     val agentLoop = com.example.brain.AgentLoop(application, db, prefs, llmEngine)
-
-    private var speechRecognizer: SpeechRecognizer? = null
+    private val voiceManager = com.example.audio.UnifiedVoiceSessionManager.getInstance(application)
 
     val interactionLogs = db.jarvisDao().getAllInteractionLogs()
     val userMemories = db.jarvisDao().getAllMemories()
@@ -118,6 +117,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         llmEngine.onHttp4xxError = { errorText ->
             SystemLogBus.w("MainViewModel", "Provider 4xx: $errorText")
         }
+
+        // Unify voice state from UnifiedVoiceSessionManager to UI StateFlows
+        viewModelScope.launch {
+            voiceManager.isListening.collect { listening ->
+                _isListening.value = listening
+            }
+        }
+        viewModelScope.launch {
+            voiceManager.liveTranscript.collect { transcript ->
+                if (transcript.isNotBlank()) {
+                    _recognizedText.value = transcript
+                }
+            }
+        }
+
+        // Barge-in: when user speaks while SARA is speaking or executing, stop SARA immediately
+        voiceManager.setInterruptionListener {
+            tts.stop()
+        }
+
+        // Voice command dispatch from UnifiedVoiceSessionManager
+        voiceManager.setCommandListener { query ->
+            _recognizedText.value = query
+            val cb = singleTurnCallback
+            singleTurnCallback = null
+            if (cb != null) {
+                cb(query)
+            } else {
+                executeUserCommand(query)
+            }
+        }
+
+        // Listen for remote commands from Floating Orb via SaraVoiceBridge
+        viewModelScope.launch {
+            com.example.audio.SaraVoiceBridge.voiceCommandRequests.collect { cmd ->
+                _recognizedText.value = cmd
+                executeUserCommand(cmd)
+            }
+        }
+
+        // Listen for stop requests from Floating Orb
+        viewModelScope.launch {
+            com.example.audio.SaraVoiceBridge.stopRequests.collect {
+                stopSaraNow()
+            }
+        }
     }
 
     private fun migrateLegacyModelSettings() {
@@ -171,186 +216,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var isContinuousListeningMode = false
     private var singleTurnCallback: ((String) -> Unit)? = null
 
-    private fun getOrCreateSpeechRecognizer(): SpeechRecognizer? {
-        if (speechRecognizer != null) return speechRecognizer
-        val context = getApplication<Application>()
-        return try {
-            if (SpeechRecognizer.isRecognitionAvailable(context)) {
-                val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-                recognizer.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        _isListening.value = true
-                        _saraResponse.value = if (isContinuousListeningMode) "Continuous Voice Active: Sun rahi hoon... (Boliye!) 🎤" else "Sun rahi hoon... Boliye! 🎤"
-                    }
-
-                    override fun onBeginningOfSpeech() {
-                        _isListening.value = true
-                    }
-
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-
-                    override fun onEndOfSpeech() {
-                        _isListening.value = false
-                    }
-
-                    override fun onError(error: Int) {
-                        _isListening.value = false
-                        com.example.audio.MicArbiter.release("app")
-                        Log.e("MainViewModel", "Speech recognition error code: $error")
-                        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
-                            try { speechRecognizer?.destroy() } catch (_: Exception) {}
-                            speechRecognizer = null
-                        }
-                        val isGf = prefs.activePersona == PersonaType.GIRLFRIEND
-                        val hint = when (error) {
-                            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                                if (isGf) "Aapki awaaz nahi aayi! Quick command tap karo ya type karke batao 💕" else "Awaaz detect nahi hui. Neeche commands tap karein ya text type karein."
-                            SpeechRecognizer.ERROR_AUDIO, SpeechRecognizer.ERROR_CLIENT ->
-                                "Microphone stream active nahi hai. Neeche commands tap karein ya text likhein!"
-                            else ->
-                                "Voice standby mode. Quick chip tap karein ya direct message type karein!"
-                        }
-                        _saraResponse.value = hint
-
-                        if (isContinuousListeningMode) {
-                            viewModelScope.launch {
-                                kotlinx.coroutines.delay(1200)
-                                if (isContinuousListeningMode) {
-                                    startListeningInternal()
-                                }
-                            }
-                        }
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        _isListening.value = false
-                        com.example.audio.MicArbiter.release("app")
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        if (!matches.isNullOrEmpty()) {
-                            val query = matches[0]
-                            _recognizedText.value = query
-                            
-                            val callback = singleTurnCallback
-                            singleTurnCallback = null
-                            if (callback != null) {
-                                callback(query)
-                            } else {
-                                executeUserCommand(query)
-                            }
-                        } else {
-                            if (isContinuousListeningMode) {
-                                viewModelScope.launch {
-                                    kotlinx.coroutines.delay(800)
-                                    if (isContinuousListeningMode) {
-                                        startListeningInternal()
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        if (!matches.isNullOrEmpty()) {
-                            _recognizedText.value = matches[0]
-                        }
-                    }
-
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
-                speechRecognizer = recognizer
-                recognizer
-            } else null
-        } catch (e: Throwable) {
-            Log.w("MainViewModel", "SpeechRecognizer not available: ${e.message}")
-            null
-        }
-    }
-
-    private fun startListeningInternal() {
-        if (!com.example.audio.MicArbiter.acquire("app")) {
-            // The background orb already owns the mic right now - don't start a
-            // competing session (that's what caused the on/off loop before).
-            _saraResponse.value = "Ek second, main background mein already sun rahi hoon... orb wale session ko pehle rokiye."
-            return
-        }
-        val recognizer = getOrCreateSpeechRecognizer()
-        if (recognizer != null) {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                // en-IN as the PRIMARY language gives back Romanized ("Hinglish") text
-                // even for Hindi speech, instead of Devanagari script.
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
-                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "hi-IN", "en-US"))
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 700L)
-            }
-            try {
-                recognizer.startListening(intent)
-                _isListening.value = true
-            } catch (e: Exception) {
-                com.example.audio.MicArbiter.release("app")
-                _isListening.value = false
-            }
-        } else {
-            com.example.audio.MicArbiter.release("app")
-        }
-    }
-
     fun startSingleTurnMic(onTextRecognized: (String) -> Unit) {
-        isContinuousListeningMode = false
         singleTurnCallback = onTextRecognized
-        startListeningInternal()
+        voiceManager.startSingleTurn()
     }
 
     fun toggleContinuousOrbMode() {
-        if (isContinuousListeningMode) {
-            isContinuousListeningMode = false
-            singleTurnCallback = null
-            stopListening()
-            _saraResponse.value = "Continuous Voice Mode off ho gaya. Tap Orb to reactivate! ✨"
-        } else {
-            isContinuousListeningMode = true
-            singleTurnCallback = null
-            startListeningInternal()
+        val active = voiceManager.toggleContinuousSession()
+        isContinuousListeningMode = active
+        if (active) {
             _saraResponse.value = "Continuous Voice Mode Active! Bolte rahiye, SARA sun rahi hai... 🎤"
+        } else {
+            _saraResponse.value = "Continuous Voice Mode off ho gaya. Tap Orb to reactivate! ✨"
         }
     }
 
     fun startListening() {
-        isContinuousListeningMode = false
         singleTurnCallback = null
-        startListeningInternal()
+        voiceManager.startContinuousSession()
     }
 
     fun stopListening() {
-        speechRecognizer?.stopListening()
-        com.example.audio.MicArbiter.release("app")
+        voiceManager.stopSession()
+        tts.stop()
         _isListening.value = false
     }
 
     fun onActivityPaused() {
-        if (!isContinuousListeningMode) {
-            stopListening()
-        }
+        // Allow voice session to persist if in continuous hands-free mode
     }
 
     private fun speakAndPromptNext(text: String, onSpeechFinished: (() -> Unit)? = null) {
+        com.example.audio.SaraVoiceBridge.updateSpeech(text)
         tts.speak(text, apiKey = prefs.geminiApiKey, groqApiKey = prefs.groqApiKey) {
             onSpeechFinished?.invoke()
-            if (isContinuousListeningMode) {
-                viewModelScope.launch {
-                    kotlinx.coroutines.delay(800)
-                    if (isContinuousListeningMode) {
-                        startListeningInternal()
-                    }
-                }
-            }
+            voiceManager.resumeContinuousListeningAfterSpeech()
         }
     }
 
@@ -634,8 +534,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentCommandJob?.cancel()
         agentLoop.cancel()
         tts.stop()
-        speechRecognizer?.stopListening()
-        com.example.audio.MicArbiter.release("app")
+        voiceManager.stopSession()
         _isProcessing.value = false
         _isListening.value = false
         _pendingRiskyPlan.value = null
@@ -906,7 +805,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        speechRecognizer?.destroy()
+        voiceManager.stopSession()
         tts.shutdown()
     }
 }

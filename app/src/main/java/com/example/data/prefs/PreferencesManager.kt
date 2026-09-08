@@ -38,7 +38,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("gemini_api_key", value).apply()
 
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+        get() = prefs.getString("gemini_model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var groqApiKey: String
@@ -46,7 +46,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString("groq_api_key", value).apply()
 
     var groqModel: String
-        get() = prefs.getString("groq_model", "llama-3.1-8b-instant") ?: "llama-3.1-8b-instant"
+        get() = prefs.getString("groq_model", "llama-3.3-70b-versatile") ?: "llama-3.3-70b-versatile"
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openRouterApiKey: String

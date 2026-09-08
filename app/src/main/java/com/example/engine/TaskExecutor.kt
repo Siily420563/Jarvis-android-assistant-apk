@@ -105,6 +105,11 @@ class TaskExecutor(
                 _executionState.value = ExecutionState.Running(plan, index)
                 onStepUpdated(plan)
 
+                // Option B: Narrate each step as it starts executing
+                if (step.descriptionHinglish.isNotBlank()) {
+                    onSpeak(step.descriptionHinglish)
+                }
+
                 delay(350) // Natural pacing between automation steps
 
                 var success = executeSingleStep(step)

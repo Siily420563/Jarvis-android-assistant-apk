@@ -71,19 +71,8 @@ fun HomeScreen(
         }
     }
 
-    val onChatMicClick = {
-        if (isListening) {
-            viewModel.stopListening()
-        } else {
-            if (!isMicGranted) {
-                onRequestMicPermission()
-            } else {
-                viewModel.startSingleTurnMic { recognized ->
-                    typedCommand = recognized
-                }
-            }
-        }
-    }
+    // Both Orb and In-App Mic now share identical behavior: continuous live session
+    val onChatMicClick = onOrbClick
 
     // Confirmation dialog for payments or destructive actions
     if (pendingRiskyPlan != null) {

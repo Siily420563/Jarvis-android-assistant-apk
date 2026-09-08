@@ -344,9 +344,9 @@ fun BrainScreen(viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val geminiModels = listOf(
-                        "gemini-3.5-flash" to "Gemini 3.5 Flash (Default)",
-                        "gemini-3.5-flash-lite" to "Gemini 3.5 Flash Lite",
-                        "gemini-3.1-flash-lite" to "Gemini 3.1 Flash Lite",
+                        "gemini-2.5-flash" to "Gemini 2.5 Flash (Fastest)",
+                        "gemini-2.5-pro" to "Gemini 2.5 Pro (Reasoning)",
+                        "gemini-3.5-flash" to "Gemini 3.5 Flash",
                         "gemini-3.1-pro-preview" to "Gemini 3.1 Pro Preview",
                         "gemini-3.7-flash" to "Gemini 3.7 Flash"
                     )
@@ -663,15 +663,20 @@ fun BrainScreen(viewModel: MainViewModel) {
 
                 HorizontalDivider(color = CyberCardBorder)
 
-                // Verbose Voice Feedback
+                // Verbose Voice Feedback (Option A vs Option B)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Speak Action Steps", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("Announces what Jarvis is doing on screen at each autonomous step", color = TextSecondary, fontSize = 11.sp)
+                        Text("Task Execution Narration (Option B)", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (verboseVoiceFeedback) "Option B Active: SARA speaks every step as it executes (e.g. 'Opening WhatsApp...')"
+                            else "Option A Active: Silent execution mode (speaks only final completion)",
+                            color = if (verboseVoiceFeedback) NeonCyan else TextSecondary,
+                            fontSize = 11.sp
+                        )
                     }
                     Switch(
                         checked = verboseVoiceFeedback,
